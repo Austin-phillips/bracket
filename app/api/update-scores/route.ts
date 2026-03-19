@@ -226,6 +226,8 @@ export async function GET(req: NextRequest) {
         .from('games')
         .update({ slack_notified: true, message_id: msg.messageId })
         .eq('espn_game_id', msg.espnGameId)
+      // Brief pause between messages to avoid Slack rate-limiting
+      await new Promise((r) => setTimeout(r, 1500))
     }
 
     // Send standings update after all game messages

@@ -153,7 +153,7 @@ export async function GET(req: NextRequest) {
       usedMessageIds
     )
 
-    // Send to Slack
+    // Send game result to Slack
     await sendSlackMessage(text)
 
     // Store the message ID
@@ -161,6 +161,9 @@ export async function GET(req: NextRequest) {
       .from('games')
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
+
+    // Brief pause so Slack doesn't rate-limit the second message
+    await new Promise((r) => setTimeout(r, 1500))
 
     // Query standings from games table (source of truth)
     const standingsArr = await queryStandings(db)
