@@ -96,21 +96,11 @@ export async function GET(req: NextRequest) {
         .map((g) => g.espn_game_id) ?? []
     )
 
-    // Fetch today's games from ESPN
-    const today = new Date()
-    const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`
-    const espnGames = await fetchTournamentGames(dateStr)
+    // Fetch games from ESPN without date filter to catch all active tournament games
+    const espnGames = await fetchTournamentGames()
 
-    // Also check yesterday in case late games rolled over
-    const yesterday = new Date(today)
-    yesterday.setDate(yesterday.getDate() - 1)
-    const yesterdayStr = `${yesterday.getFullYear()}${String(yesterday.getMonth() + 1).padStart(2, '0')}${String(yesterday.getDate()).padStart(2, '0')}`
-    const yesterdayGames = await fetchTournamentGames(yesterdayStr)
-
-    const allGames = [...espnGames, ...yesterdayGames]
-    // Deduplicate by gameId
     const uniqueGames = new Map<string, ESPNGame>()
-    for (const g of allGames) {
+    for (const g of espnGames) {
       uniqueGames.set(g.gameId, g)
     }
 

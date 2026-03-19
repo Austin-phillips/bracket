@@ -65,7 +65,7 @@ export async function fetchTournamentGames(date?: string): Promise<ESPNGame[]> {
       name: comp.team?.name ?? '',
       displayName: comp.team?.displayName ?? '',
       abbreviation: comp.team?.abbreviation ?? '',
-      score: comp.score?.displayValue ?? comp.score?.value?.toString() ?? '0',
+      score: typeof comp.score === 'string' ? comp.score : (comp.score?.displayValue ?? comp.score?.value?.toString() ?? '0'),
       winner: comp.winner ?? false,
       espnId: comp.team?.id?.toString() ?? '',
     })
