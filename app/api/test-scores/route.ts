@@ -8,27 +8,28 @@ import { Team } from '@/lib/types'
 export const dynamic = 'force-dynamic'
 
 // Simulated matchups using real bracket seeding:
-// Each hit generates the next fake game from this list
+// Each hit generates the next fake game from this list.
+// These update real team wins/eliminations so the dashboard reflects changes.
 const FAKE_MATCHUPS = [
-  // Normal game: 1-seed vs 16-seed (blowout) — Austin vs nobody
+  // Game 1: Blowout 1v16 — Austin's Michigan crushes Austin's Siena (self-inflicted)
   { winnerSeed: 1, winnerRegion: 'Midwest', loserSeed: 16, loserRegion: 'East', winnerScore: 88, loserScore: 55, round: 1 },
-  // Upset: 12-seed vs 5-seed — Shane vs Austin
+  // Game 2: Upset 12v5 — Shane's Northern Iowa upsets Austin's Texas Tech
   { winnerSeed: 12, winnerRegion: 'East', loserSeed: 5, loserRegion: 'Midwest', winnerScore: 72, loserScore: 68, round: 1 },
-  // Close game: 8 vs 9 — Sean vs Trey
+  // Game 3: Close 8v9 — Sean's Georgia edges Trey's TCU
   { winnerSeed: 8, winnerRegion: 'Midwest', loserSeed: 9, loserRegion: 'East', winnerScore: 65, loserScore: 63, round: 1 },
-  // Blowout: 2-seed vs 15-seed — Shane vs Austin
+  // Game 4: Blowout 2v15 — Shane's Iowa State crushes Austin's Queens
   { winnerSeed: 2, winnerRegion: 'Midwest', loserSeed: 15, loserRegion: 'West', winnerScore: 95, loserScore: 58, round: 1 },
-  // Head to head: 3 vs 6 — Austin vs Sean
+  // Game 5: Head to head R32 — Austin's Gonzaga beats Sean's Tennessee
   { winnerSeed: 3, winnerRegion: 'West', loserSeed: 6, loserRegion: 'Midwest', winnerScore: 77, loserScore: 74, round: 2 },
-  // Upset: 11-seed vs 3-seed — Austin vs Shane
+  // Game 6: Upset R32 — Austin's VCU over Shane's Virginia
   { winnerSeed: 11, winnerRegion: 'South', loserSeed: 3, loserRegion: 'Midwest', winnerScore: 81, loserScore: 76, round: 2 },
-  // Nobody picked either: random matchup
+  // Game 7: Nobody picked either — Saint Louis over Villanova
   { winnerSeed: 9, winnerRegion: 'Midwest', loserSeed: 8, loserRegion: 'West', winnerScore: 70, loserScore: 66, round: 1 },
-  // Only loser picked: Sean loses a team
+  // Game 8: Only loser picked — Missouri over Sean's UCLA
   { winnerSeed: 10, winnerRegion: 'West', loserSeed: 7, loserRegion: 'East', winnerScore: 69, loserScore: 67, round: 1 },
-  // Blowout upset: 13 over 4 — Trey picks winner
+  // Game 9: Big upset — Trey's CA Baptist over Sean's Arkansas
   { winnerSeed: 13, winnerRegion: 'East', loserSeed: 4, loserRegion: 'West', winnerScore: 82, loserScore: 59, round: 1 },
-  // Close upset: 10 over 2 — Austin vs Trey
+  // Game 10: Close upset R32 — Austin's Missouri over Trey's Purdue
   { winnerSeed: 10, winnerRegion: 'West', loserSeed: 2, loserRegion: 'West', winnerScore: 71, loserScore: 70, round: 2 },
 ]
 
@@ -63,7 +64,7 @@ export async function GET(req: NextRequest) {
     if (testCount >= FAKE_MATCHUPS.length) {
       return NextResponse.json({
         message: `All ${FAKE_MATCHUPS.length} test games already sent. Clean up test data to re-run.`,
-        cleanupSQL: "DELETE FROM games WHERE espn_game_id LIKE 'test-%';",
+        cleanupSQL: "See reset SQL in the README or ask the dev.",
       })
     }
 
@@ -86,7 +87,7 @@ export async function GET(req: NextRequest) {
       }, { status: 500 })
     }
 
-    // Insert fake game (don't update real team wins/elimination — this is just a message test)
+    // Insert fake game record
     await db.from('games').upsert(
       {
         espn_game_id: fakeGameId,
@@ -101,6 +102,17 @@ export async function GET(req: NextRequest) {
       },
       { onConflict: 'espn_game_id' }
     )
+
+    // UPDATE REAL TEAM DATA — increment wins, mark eliminated
+    await db
+      .from('teams')
+      .update({ wins: winnerTeam.wins + 1 })
+      .eq('id', winnerTeam.id)
+
+    await db
+      .from('teams')
+      .update({ is_eliminated: true })
+      .eq('id', loserTeam.id)
 
     // Find which players picked these teams
     const { data: winnerPicks } = await db
@@ -140,7 +152,7 @@ export async function GET(req: NextRequest) {
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
 
-    // Send standings (use real team data + simulated context)
+    // Send standings using real updated data
     const { data: allPicks } = await db
       .from('picks')
       .select('player_name, team_id, teams(wins, is_eliminated)')
@@ -152,13 +164,8 @@ export async function GET(req: NextRequest) {
         const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
         const team = p.teams
         if (team) {
-          // Add fake wins for this test game
-          let extraWins = 0
-          let eliminated = team.is_eliminated
-          if (team.id === winnerTeam.id) extraWins = 1
-          if (team.id === loserTeam.id) eliminated = true
-          current.points += (team.wins ?? 0) + extraWins
-          if (!eliminated) current.alive++
+          current.points += team.wins ?? 0
+          if (!team.is_eliminated) current.alive++
         }
         standings.set(p.player_name, current)
       }
