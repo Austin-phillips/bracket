@@ -88,20 +88,26 @@ export async function GET(req: NextRequest) {
     }
 
     // Insert fake game record
-    await db.from('games').upsert(
-      {
-        espn_game_id: fakeGameId,
-        round: matchup.round,
-        winner_team_id: winnerTeam.id,
-        loser_team_id: loserTeam.id,
-        winner_score: matchup.winnerScore,
-        loser_score: matchup.loserScore,
-        status: 'final',
-        game_date: new Date().toISOString(),
-        slack_notified: false,
-      },
-      { onConflict: 'espn_game_id' }
-    )
+    const { error: insertErr } = await db.from('games').insert({
+      espn_game_id: fakeGameId,
+      round: matchup.round,
+      winner_team_id: winnerTeam.id,
+      loser_team_id: loserTeam.id,
+      winner_score: matchup.winnerScore,
+      loser_score: matchup.loserScore,
+      status: 'final',
+      game_date: new Date().toISOString(),
+      slack_notified: false,
+    })
+    if (insertErr) {
+      return NextResponse.json({
+        error: 'Failed to insert test game',
+        details: String(insertErr.message),
+        fakeGameId,
+        testCount,
+        existingTestGames: existingTestGames?.map((g) => g.espn_game_id),
+      }, { status: 500 })
+    }
 
     // UPDATE REAL TEAM DATA — increment wins, mark eliminated
     await db
