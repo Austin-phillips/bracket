@@ -42,23 +42,25 @@ export async function GET(req: NextRequest) {
     const { data: teams, error: teamsErr } = await db.from('teams').select('*')
     if (teamsErr) throw teamsErr
 
-    // Check how many test games we've already sent
-    // Query by all possible test IDs to avoid flaky LIKE matching
+    // Check which test games have already been fully processed (slack_notified = true)
     const testIds = FAKE_MATCHUPS.map((_, i) => `test-${i + 1}`)
-    const { data: existingTestGames } = await db
+    const { data: allTestGames } = await db
       .from('games')
-      .select('espn_game_id, message_id')
+      .select('espn_game_id, message_id, slack_notified')
       .in('espn_game_id', testIds)
 
-    const testCount = existingTestGames?.length ?? 0
+    // Count only games that were fully sent to Slack
+    const notifiedGames = (allTestGames ?? []).filter((g) => g.slack_notified)
+    const testCount = notifiedGames.length
+
     const usedMessageIds = new Set(
-      existingTestGames?.map((g) => g.message_id).filter(Boolean) as string[] ?? []
+      (allTestGames ?? []).map((g) => g.message_id).filter(Boolean) as string[]
     )
 
     // Also load message IDs from real games so we don't repeat those either
     const { data: realGames } = await db
       .from('games')
-      .select('espn_game_id, message_id')
+      .select('message_id')
       .not('espn_game_id', 'in', `(${testIds.join(',')})`)
     for (const g of realGames ?? []) {
       if (g.message_id) usedMessageIds.add(g.message_id)
@@ -69,6 +71,13 @@ export async function GET(req: NextRequest) {
         message: `All ${FAKE_MATCHUPS.length} test games already sent. Clean up test data to re-run.`,
         cleanupSQL: "See reset SQL in the README or ask the dev.",
       })
+    }
+
+    // Skip games that exist but weren't notified (partial from a previous run)
+    // Delete them so we can re-insert cleanly
+    const partialGames = (allTestGames ?? []).filter((g) => !g.slack_notified)
+    for (const pg of partialGames) {
+      await db.from('games').delete().eq('espn_game_id', pg.espn_game_id)
     }
 
     // Get the next fake matchup
@@ -90,21 +99,18 @@ export async function GET(req: NextRequest) {
       }, { status: 500 })
     }
 
-    // Insert fake game record (upsert so reruns don't fail)
-    const { error: insertErr } = await db.from('games').upsert(
-      {
-        espn_game_id: fakeGameId,
-        round: matchup.round,
-        winner_team_id: winnerTeam.id,
-        loser_team_id: loserTeam.id,
-        winner_score: matchup.winnerScore,
-        loser_score: matchup.loserScore,
-        status: 'final',
-        game_date: new Date().toISOString(),
-        slack_notified: false,
-      },
-      { onConflict: 'espn_game_id' }
-    )
+    // Insert fake game record
+    const { error: insertErr } = await db.from('games').insert({
+      espn_game_id: fakeGameId,
+      round: matchup.round,
+      winner_team_id: winnerTeam.id,
+      loser_team_id: loserTeam.id,
+      winner_score: matchup.winnerScore,
+      loser_score: matchup.loserScore,
+      status: 'final',
+      game_date: new Date().toISOString(),
+      slack_notified: false,
+    })
     if (insertErr) throw insertErr
 
     // UPDATE REAL TEAM DATA — increment wins, mark eliminated
