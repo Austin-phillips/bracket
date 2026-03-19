@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
-import { normalizeTeamName, ESPNGame } from '@/lib/espn'
+import { normalizeTeamName } from '@/lib/espn'
 import { sendSlackMessage } from '@/lib/slack'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
@@ -8,12 +8,8 @@ import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
-// ── Mock ESPN data ──────────────────────────────────────────────────────────
-const MOCK_ESPN_GAMES: {
-  winnerName: string; loserName: string
-  winnerScore: string; loserScore: string
-  date: string
-}[] = [
+// ── Mock game data using real bracket teams ─────────────────────────────────
+const MOCK_GAMES = [
   { winnerName: 'Michigan', loserName: 'Siena', winnerScore: '88', loserScore: '55', date: '2026-03-20T19:00:00Z' },
   { winnerName: 'Northern Iowa', loserName: 'Texas Tech', winnerScore: '72', loserScore: '68', date: '2026-03-20T21:00:00Z' },
   { winnerName: 'Georgia', loserName: 'TCU', winnerScore: '65', loserScore: '63', date: '2026-03-20T23:00:00Z' },
@@ -26,27 +22,8 @@ const MOCK_ESPN_GAMES: {
   { winnerName: 'Missouri', loserName: 'Purdue', winnerScore: '71', loserScore: '70', date: '2026-03-22T18:00:00Z' },
 ]
 
-function getMockESPNGames(count: number): ESPNGame[] {
-  return MOCK_ESPN_GAMES.slice(0, count).map((m, i) => ({
-    gameId: `test-${i + 1}`,
-    status: 'final' as const,
-    completed: true,
-    date: m.date,
-    team1: {
-      name: m.winnerName, displayName: m.winnerName, abbreviation: '',
-      score: m.winnerScore, winner: true, espnId: `test-espn-${i * 2}`,
-    },
-    team2: {
-      name: m.loserName, displayName: m.loserName, abbreviation: '',
-      score: m.loserScore, winner: false, espnId: `test-espn-${i * 2 + 1}`,
-    },
-  }))
-}
-
-// ── Identical to prod ───────────────────────────────────────────────────────
-function findMatchingTeam(espnName: string, espnId: string, teams: Team[]): Team | null {
-  const byId = teams.find((t) => t.espn_id === espnId)
-  if (byId) return byId
+// ── Same helpers as prod ────────────────────────────────────────────────────
+function findMatchingTeam(espnName: string, teams: Team[]): Team | null {
   const byName = teams.find(
     (t) => t.name.toLowerCase() === espnName.toLowerCase() ||
            t.display_name.toLowerCase() === espnName.toLowerCase()
@@ -79,185 +56,163 @@ function detectRound(gameDate: string): number {
   return 6
 }
 
-function computeStandings(
-  teams: Team[],
-  picks: { player_name: string; team_id: number }[]
-): { name: string; points: number; alive: number }[] {
-  const map = new Map<string, { points: number; alive: number }>()
-  for (const pick of picks) {
-    const team = teams.find((t) => t.id === pick.team_id)
-    if (!team) continue
-    const cur = map.get(pick.player_name) ?? { points: 0, alive: 0 }
-    cur.points += team.wins
-    if (!team.is_eliminated) cur.alive++
-    map.set(pick.player_name, cur)
-  }
-  return [...map.entries()]
-    .map(([name, s]) => ({ name, points: s.points, alive: s.alive }))
-    .sort((a, b) => b.points - a.points || b.alive - a.alive)
-}
-
 // ── Main handler ────────────────────────────────────────────────────────────
+// ?game=N → replays games 1-N in memory, writes + Slacks ONLY game N
 export async function GET(req: NextRequest) {
   const startTime = Date.now()
   console.log('[TEST] === Test scores endpoint hit ===')
 
   const gameParam = req.nextUrl.searchParams.get('game')
-  const gameCount = gameParam ? parseInt(gameParam) : null
+  const gameNumber = gameParam ? parseInt(gameParam) : null
 
-  if (!gameCount || gameCount < 1 || gameCount > MOCK_ESPN_GAMES.length) {
+  if (!gameNumber || gameNumber < 1 || gameNumber > MOCK_GAMES.length) {
     return NextResponse.json({
-      error: `Provide ?game=N where N is 1-${MOCK_ESPN_GAMES.length}`,
+      error: `Provide ?game=N where N is 1-${MOCK_GAMES.length}`,
       usage: `${req.nextUrl.origin}/api/test-scores?game=1`,
-      totalGames: MOCK_ESPN_GAMES.length,
+      totalGames: MOCK_GAMES.length,
     }, { status: 400 })
   }
 
-  console.log(`[TEST] Simulating ${gameCount} completed ESPN games`)
+  console.log(`[TEST] Game ${gameNumber}/${MOCK_GAMES.length} requested`)
 
   try {
     const db = getSupabaseAdmin()
 
-    // ── Read ALL data upfront (teams, games, picks) ───────────────────────
-    console.log('[TEST] Fetching teams, existing games, and picks...')
+    // Read teams and picks upfront
+    console.log('[TEST] Fetching teams, picks, and used message IDs...')
     const [
       { data: teams, error: teamsErr },
-      { data: existingGames, error: gamesErr },
       { data: allPicks, error: picksErr },
+      { data: allMessageIds },
     ] = await Promise.all([
       db.from('teams').select('*'),
-      db.from('games').select('espn_game_id, status, message_id'),
       db.from('picks').select('player_name, team_id'),
+      db.from('games').select('message_id').not('message_id', 'is', null),
     ])
     if (teamsErr) throw teamsErr
-    if (gamesErr) throw gamesErr
     if (picksErr) throw picksErr
 
-    console.log(`[TEST] Teams: ${teams?.length ?? 0}, Existing games: ${existingGames?.length ?? 0}, Picks: ${allPicks?.length ?? 0}`)
-
-    const processedFinals = new Set(
-      existingGames?.filter((g) => g.status === 'final').map((g) => g.espn_game_id) ?? []
-    )
     const usedMessageIds = new Set(
-      existingGames?.map((g) => g.message_id).filter(Boolean) as string[] ?? []
+      (allMessageIds ?? []).map((g: { message_id: string }) => g.message_id)
     )
-    console.log(`[TEST] Already-processed finals: ${processedFinals.size}, Used message IDs: ${usedMessageIds.size}`)
+    console.log(`[TEST] Teams: ${teams!.length}, Picks: ${allPicks!.length}, Used IDs: ${usedMessageIds.size}`)
 
-    // ── Mock ESPN games ───────────────────────────────────────────────────
-    const espnGames = getMockESPNGames(gameCount)
-    console.log(`[TEST] Mock ESPN returned ${espnGames.length} completed games`)
-
-    const uniqueGames = new Map<string, ESPNGame>()
-    for (const g of espnGames) uniqueGames.set(g.gameId, g)
-
-    // ── Process games (identical logic to prod) ───────────────────────────
-    let newResults = 0
-    let skippedAlreadyProcessed = 0
-    const slackMessages: { text: string; espnGameId: string; messageId: string }[] = []
-
-    for (const game of uniqueGames.values()) {
-      if (processedFinals.has(game.gameId)) {
-        skippedAlreadyProcessed++
-        continue
-      }
-      if (!game.completed) continue
-
-      const round = detectRound(game.date)
-      if (round === 0) {
-        console.log(`[TEST] Skipping First Four game: ${game.gameId}`)
-        continue
-      }
-
-      const winnerEspn = game.team1.winner ? game.team1 : game.team2
-      const loserEspn = game.team1.winner ? game.team2 : game.team1
-
-      const winnerTeam = findMatchingTeam(winnerEspn.displayName, winnerEspn.espnId, teams!)
-      const loserTeam = findMatchingTeam(loserEspn.displayName, loserEspn.espnId, teams!)
-
-      if (!winnerTeam || !loserTeam) {
-        console.warn(`[TEST] No match for game ${game.gameId}: winner="${winnerEspn.displayName}", loser="${loserEspn.displayName}"`)
-        continue
-      }
-
-      console.log(`[TEST] New final: ${winnerTeam.display_name} (${winnerTeam.seed}) ${winnerEspn.score} - ${loserTeam.display_name} (${loserTeam.seed}) ${loserEspn.score} | Round ${round}`)
-
-      // DB writes
-      const { error: upsertErr } = await db.from('games').upsert({
-        espn_game_id: game.gameId, round,
-        winner_team_id: winnerTeam.id, loser_team_id: loserTeam.id,
-        winner_score: parseInt(winnerEspn.score) || 0, loser_score: parseInt(loserEspn.score) || 0,
-        status: 'final', game_date: game.date, slack_notified: false,
-      }, { onConflict: 'espn_game_id' })
-      if (upsertErr) {
-        console.error(`[TEST] Upsert FAILED for ${game.gameId}:`, upsertErr)
-        continue
-      }
-
-      await db.from('teams').update({ wins: winnerTeam.wins + 1, espn_id: winnerEspn.espnId }).eq('id', winnerTeam.id)
-      await db.from('teams').update({ is_eliminated: true, espn_id: loserEspn.espnId }).eq('id', loserTeam.id)
-
-      // Mutate local state (this is what standings will use)
-      winnerTeam.wins += 1
-      winnerTeam.espn_id = winnerEspn.espnId
-      loserTeam.is_eliminated = true
-      loserTeam.espn_id = loserEspn.espnId
-
-      console.log(`[TEST] ${winnerTeam.display_name}: wins → ${winnerTeam.wins} | ${loserTeam.display_name}: eliminated`)
-
-      newResults++
-
-      // Find players from in-memory picks
-      const winnerPlayers = allPicks!.filter((p) => p.team_id === winnerTeam.id).map((p) => p.player_name)
-      const loserPlayers = allPicks!.filter((p) => p.team_id === loserTeam.id).map((p) => p.player_name)
-      console.log(`[TEST] Winner picked by: ${winnerPlayers.join(', ') || 'nobody'} | Loser picked by: ${loserPlayers.join(', ') || 'nobody'}`)
-
-      const roundName = ROUND_NAMES[round] ?? `Round ${round}`
-      const { text, messageId } = generateGameMessage({
-        winnerTeam: winnerTeam.display_name, loserTeam: loserTeam.display_name,
-        winnerScore: winnerEspn.score, loserScore: loserEspn.score,
-        winnerSeed: winnerTeam.seed, loserSeed: loserTeam.seed,
-        winnerPlayers, loserPlayers, round: roundName,
-      }, usedMessageIds)
-
-      slackMessages.push({ text, espnGameId: game.gameId, messageId })
+    // ── Reset local teams to baseline, then replay all games 1-N ────────
+    // This gives us correct standings regardless of stale DB reads
+    for (const team of teams!) {
+      team.wins = 0
+      team.is_eliminated = false
     }
 
-    console.log(`[TEST] Processing summary — new: ${newResults}, already processed: ${skippedAlreadyProcessed}`)
+    const newGameIndex = gameNumber - 1
+    let slackText = ''
+    let slackMessageId = ''
+    let slackGameId = ''
+    let matchupSummary = ''
 
-    // ── Send Slack with in-memory standings (NO stale DB reads) ───────────
-    if (slackMessages.length > 0) {
-      console.log(`[TEST] Sending ${slackMessages.length} Slack notification(s)...`)
+    for (let i = 0; i < gameNumber; i++) {
+      const mock = MOCK_GAMES[i]
+      const round = detectRound(mock.date)
+      const winnerTeam = findMatchingTeam(mock.winnerName, teams!)
+      const loserTeam = findMatchingTeam(mock.loserName, teams!)
 
-      // Compute standings from local mutated teams + picks — always accurate
-      const standingsArr = computeStandings(teams!, allPicks!)
-      console.log(`[TEST] In-memory standings:`, JSON.stringify(standingsArr))
+      if (!winnerTeam || !loserTeam) {
+        console.warn(`[TEST] No match for game ${i + 1}: ${mock.winnerName} vs ${mock.loserName}`)
+        continue
+      }
 
+      // Always mutate local state (for correct standings)
+      winnerTeam.wins += 1
+      loserTeam.is_eliminated = true
+
+      // Only DB-write and Slack for game N (the new one)
+      if (i === newGameIndex) {
+        const fakeGameId = `test-${gameNumber}`
+        console.log(`[TEST] Processing game ${gameNumber}: ${winnerTeam.display_name} (${winnerTeam.seed}) ${mock.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${mock.loserScore} | Round ${round}`)
+
+        // Upsert game
+        const { error: upsertErr } = await db.from('games').upsert({
+          espn_game_id: fakeGameId, round,
+          winner_team_id: winnerTeam.id, loser_team_id: loserTeam.id,
+          winner_score: parseInt(mock.winnerScore), loser_score: parseInt(mock.loserScore),
+          status: 'final', game_date: mock.date, slack_notified: false,
+        }, { onConflict: 'espn_game_id' })
+        if (upsertErr) {
+          console.error(`[TEST] Upsert FAILED:`, upsertErr)
+          throw upsertErr
+        }
+        console.log(`[TEST] Game ${fakeGameId} upserted`)
+
+        // Update teams in DB with absolute values from replay
+        await db.from('teams').update({ wins: winnerTeam.wins }).eq('id', winnerTeam.id)
+        await db.from('teams').update({ is_eliminated: true }).eq('id', loserTeam.id)
+        console.log(`[TEST] ${winnerTeam.display_name}: wins=${winnerTeam.wins} | ${loserTeam.display_name}: eliminated`)
+
+        // Build Slack message
+        const winnerPlayers = allPicks!.filter((p) => p.team_id === winnerTeam.id).map((p) => p.player_name)
+        const loserPlayers = allPicks!.filter((p) => p.team_id === loserTeam.id).map((p) => p.player_name)
+        console.log(`[TEST] Winner picked by: ${winnerPlayers.join(', ') || 'nobody'} | Loser picked by: ${loserPlayers.join(', ') || 'nobody'}`)
+
+        const roundName = ROUND_NAMES[round] ?? `Round ${round}`
+        const { text, messageId } = generateGameMessage({
+          winnerTeam: winnerTeam.display_name, loserTeam: loserTeam.display_name,
+          winnerScore: mock.winnerScore, loserScore: mock.loserScore,
+          winnerSeed: winnerTeam.seed, loserSeed: loserTeam.seed,
+          winnerPlayers, loserPlayers, round: roundName,
+        }, usedMessageIds)
+
+        slackText = text
+        slackMessageId = messageId
+        slackGameId = fakeGameId
+        matchupSummary = `${winnerTeam.display_name} (${winnerTeam.seed}) ${mock.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${mock.loserScore}`
+      } else {
+        console.log(`[TEST] Replaying game ${i + 1} in memory: ${winnerTeam.display_name} beat ${loserTeam.display_name}`)
+      }
+    }
+
+    // ── Compute standings from fully-replayed local state ────────────────
+    const standingsArr: { name: string; points: number; alive: number }[] = []
+    const standingsMap = new Map<string, { points: number; alive: number }>()
+    for (const pick of allPicks!) {
+      const team = teams!.find((t) => t.id === pick.team_id)
+      if (!team) continue
+      const cur = standingsMap.get(pick.player_name) ?? { points: 0, alive: 0 }
+      cur.points += team.wins
+      if (!team.is_eliminated) cur.alive++
+      standingsMap.set(pick.player_name, cur)
+    }
+    for (const [name, s] of standingsMap) {
+      standingsArr.push({ name, points: s.points, alive: s.alive })
+    }
+    standingsArr.sort((a, b) => b.points - a.points || b.alive - a.alive)
+    console.log(`[TEST] Standings:`, JSON.stringify(standingsArr))
+
+    // ── Send ONE Slack message ──────────────────────────────────────────
+    if (slackText) {
       const standingsText = standingsArr.length > 0
         ? '\n\n' + generateStandingsMessage(standingsArr)
         : ''
 
-      for (const msg of slackMessages) {
-        console.log(`[TEST] Sending Slack for ${msg.espnGameId}...`)
-        const slackResult = await sendSlackMessage(msg.text + standingsText)
-        console.log(`[TEST] Slack: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
+      console.log(`[TEST] Sending Slack for game ${gameNumber}...`)
+      const slackResult = await sendSlackMessage(slackText + standingsText)
+      console.log(`[TEST] Slack: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
 
-        await db.from('games')
-          .update({ slack_notified: true, message_id: msg.messageId })
-          .eq('espn_game_id', msg.espnGameId)
-      }
-    } else {
-      console.log('[TEST] No new games to notify about')
+      await db.from('games')
+        .update({ slack_notified: true, message_id: slackMessageId })
+        .eq('espn_game_id', slackGameId)
     }
 
     const elapsed = Date.now() - startTime
-    console.log(`[TEST] === Done in ${elapsed}ms. New: ${newResults}, Checked: ${uniqueGames.size} ===`)
+    console.log(`[TEST] === Done in ${elapsed}ms ===`)
 
     return NextResponse.json({
-      success: true, newResults, skippedAlreadyProcessed,
-      gamesChecked: uniqueGames.size, elapsed: `${elapsed}ms`,
-      standings: computeStandings(teams!, allPicks!),
-      next: gameCount < MOCK_ESPN_GAMES.length
-        ? `${req.nextUrl.origin}/api/test-scores?game=${gameCount + 1}`
+      success: true,
+      game: gameNumber,
+      matchup: matchupSummary,
+      standings: standingsArr,
+      elapsed: `${elapsed}ms`,
+      next: gameNumber < MOCK_GAMES.length
+        ? `${req.nextUrl.origin}/api/test-scores?game=${gameNumber + 1}`
         : 'All tests complete!',
     })
   } catch (error) {
