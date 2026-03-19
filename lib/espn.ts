@@ -116,6 +116,12 @@ export function normalizeTeamName(name: string): string {
     'rams', 'red storm', 'red raiders', 'horned frogs', 'cyclones',
     'aggies', 'buckeyes', 'gaels', 'rainbow warriors', 'cowboys',
     'sharks', 'bulls', 'hurricanes', 'redhawks',
+    'blue devils', 'cornhuskers', 'cardinals', 'badgers', 'saints',
+    'commodores', 'razorbacks', 'tar heels', 'wolverines', 'longhorns',
+    'fighting illini', 'quakers', 'vandals', 'bison', 'owls',
+    'billikens', 'trojans', 'hoyas', 'jayhawks', 'sooners',
+    'volunteers', 'cavaliers', 'crimson tide', 'boilermakers',
+    'hawkeyes', 'zips', 'pride', 'cougars', 'musketeers',
   ]
 
   for (const suffix of suffixes) {
