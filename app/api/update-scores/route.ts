@@ -275,15 +275,22 @@ export async function GET(req: NextRequest) {
       console.log(`[PROD] Sending ${slackMessages.length} Slack notification(s)...`)
 
       for (const msg of slackMessages) {
-        console.log(`[PROD] Sending Slack message for game ${msg.espnGameId}...`)
-        const slackResult = await sendSlackMessage(msg.text)
-        console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
-
-        await db
+        // Atomically claim this notification — only one concurrent run can win
+        const { data: claimed } = await db
           .from('games')
           .update({ slack_notified: true, message_id: msg.messageId })
           .eq('espn_game_id', msg.espnGameId)
-        console.log(`[PROD] Marked ${msg.espnGameId} as slack_notified with message_id=${msg.messageId}`)
+          .eq('slack_notified', false)
+          .select('espn_game_id')
+
+        if (!claimed || claimed.length === 0) {
+          console.log(`[PROD] Game ${msg.espnGameId} already notified — skipping duplicate Slack`)
+          continue
+        }
+
+        console.log(`[PROD] Sending Slack message for game ${msg.espnGameId}...`)
+        const slackResult = await sendSlackMessage(msg.text)
+        console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
       }
     } else {
       console.log('[PROD] No new games to notify about')
