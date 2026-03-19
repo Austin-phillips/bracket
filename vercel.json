@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/update-scores?key=${CRON_SECRET}",
+      "schedule": "0 6 * * *"
+    }
+  ]
+}
