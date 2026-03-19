@@ -42,10 +42,12 @@ export async function GET(req: NextRequest) {
     if (teamsErr) throw teamsErr
 
     // Check how many test games we've already sent
+    // Query by all possible test IDs to avoid flaky LIKE matching
+    const testIds = FAKE_MATCHUPS.map((_, i) => `test-${i + 1}`)
     const { data: existingTestGames } = await db
       .from('games')
       .select('espn_game_id, message_id')
-      .like('espn_game_id', 'test-%')
+      .in('espn_game_id', testIds)
 
     const testCount = existingTestGames?.length ?? 0
     const usedMessageIds = new Set(
@@ -55,8 +57,8 @@ export async function GET(req: NextRequest) {
     // Also load message IDs from real games so we don't repeat those either
     const { data: realGames } = await db
       .from('games')
-      .select('message_id')
-      .not('espn_game_id', 'like', 'test-%')
+      .select('espn_game_id, message_id')
+      .not('espn_game_id', 'in', `(${testIds.join(',')})`)
     for (const g of realGames ?? []) {
       if (g.message_id) usedMessageIds.add(g.message_id)
     }
@@ -87,27 +89,22 @@ export async function GET(req: NextRequest) {
       }, { status: 500 })
     }
 
-    // Insert fake game record
-    const { error: insertErr } = await db.from('games').insert({
-      espn_game_id: fakeGameId,
-      round: matchup.round,
-      winner_team_id: winnerTeam.id,
-      loser_team_id: loserTeam.id,
-      winner_score: matchup.winnerScore,
-      loser_score: matchup.loserScore,
-      status: 'final',
-      game_date: new Date().toISOString(),
-      slack_notified: false,
-    })
-    if (insertErr) {
-      return NextResponse.json({
-        error: 'Failed to insert test game',
-        details: String(insertErr.message),
-        fakeGameId,
-        testCount,
-        existingTestGames: existingTestGames?.map((g) => g.espn_game_id),
-      }, { status: 500 })
-    }
+    // Insert fake game record (upsert so reruns don't fail)
+    const { error: insertErr } = await db.from('games').upsert(
+      {
+        espn_game_id: fakeGameId,
+        round: matchup.round,
+        winner_team_id: winnerTeam.id,
+        loser_team_id: loserTeam.id,
+        winner_score: matchup.winnerScore,
+        loser_score: matchup.loserScore,
+        status: 'final',
+        game_date: new Date().toISOString(),
+        slack_notified: false,
+      },
+      { onConflict: 'espn_game_id' }
+    )
+    if (insertErr) throw insertErr
 
     // UPDATE REAL TEAM DATA — increment wins, mark eliminated
     await db
