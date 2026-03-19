@@ -67,8 +67,20 @@ function UpcomingBadge({ date }: { date: string }) {
   )
 }
 
+function HalftimeBadge() {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-yellow-400 uppercase tracking-wider">
+      <span className="relative flex h-2 w-2">
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-yellow-500" />
+      </span>
+      Halftime
+    </span>
+  )
+}
+
 function GameCard({ game }: { game: LiveGameData }) {
   const isLive = game.status === 'in_progress'
+  const isHalftime = isLive && game.statusDetail?.toLowerCase().includes('halftime')
   const t1Score = parseInt(game.team1.score) || 0
   const t2Score = parseInt(game.team2.score) || 0
   const t1Winning = t1Score > t2Score
@@ -78,14 +90,16 @@ function GameCard({ game }: { game: LiveGameData }) {
     <div
       className={`relative rounded-xl overflow-hidden transition-all ${
         isLive
-          ? 'bg-gradient-to-br from-gray-800 to-gray-900 ring-1 ring-red-500/30'
+          ? isHalftime
+            ? 'bg-gradient-to-br from-gray-800 to-gray-900 ring-1 ring-yellow-500/30'
+            : 'bg-gradient-to-br from-gray-800 to-gray-900 ring-1 ring-red-500/30'
           : 'bg-gray-800/60 ring-1 ring-gray-700/50'
       }`}
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 pt-3 pb-2">
-        {isLive ? <LiveBadge /> : <UpcomingBadge date={game.date} />}
-        {isLive && game.statusDetail && (
+        {isLive ? (isHalftime ? <HalftimeBadge /> : <LiveBadge />) : <UpcomingBadge date={game.date} />}
+        {isLive && game.statusDetail && !isHalftime && (
           <span className="text-xs text-yellow-400/90 font-mono font-semibold">
             {game.statusDetail}
           </span>
