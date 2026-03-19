@@ -229,12 +229,12 @@ export async function GET(req: NextRequest) {
 
     // Send standings update after all game messages
     if (slackMessages.length > 0) {
-      // Fetch fresh teams + picks separately to avoid stale join data
-      const { data: freshTeams } = await db.from('teams').select('id, wins, is_eliminated')
+      // Use in-memory teams array — it's already been mutated with wins/eliminations
+      // during the game loop above, so it's guaranteed up-to-date (DB reads can be stale)
       const { data: allPicks } = await db.from('picks').select('player_name, team_id')
 
-      if (allPicks && freshTeams) {
-        const teamMap = new Map(freshTeams.map((t) => [t.id, t]))
+      if (allPicks && teams) {
+        const teamMap = new Map(teams.map((t: Team) => [t.id, t]))
         const standings = new Map<string, { points: number; alive: number }>()
 
         for (const p of allPicks) {

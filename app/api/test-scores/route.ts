@@ -152,13 +152,18 @@ export async function GET(req: NextRequest) {
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
 
-    // Fetch fresh teams + picks separately to avoid stale join data
-    const { data: freshTeams } = await db.from('teams').select('id, wins, is_eliminated')
+    // Build standings in memory — DB reads can be stale after writes
+    // Apply this game's result to the in-memory teams array we already have
+    const winnerIdx = teams!.findIndex((t: Team) => t.id === winnerTeam.id)
+    const loserIdx = teams!.findIndex((t: Team) => t.id === loserTeam.id)
+    if (winnerIdx >= 0) teams![winnerIdx].wins += 1
+    if (loserIdx >= 0) teams![loserIdx].is_eliminated = true
+
     const { data: allPicks } = await db.from('picks').select('player_name, team_id')
 
     let standingsText = ''
-    if (allPicks && freshTeams) {
-      const teamMap = new Map(freshTeams.map((t) => [t.id, t]))
+    if (allPicks && teams) {
+      const teamMap = new Map(teams.map((t: Team) => [t.id, t]))
       const standings = new Map<string, { points: number; alive: number }>()
 
       for (const p of allPicks) {
