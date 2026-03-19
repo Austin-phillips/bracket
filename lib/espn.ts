@@ -58,7 +58,7 @@ export async function fetchTournamentGames(date?: string): Promise<ESPNGame[]> {
     const statusName: string = statusType?.name ?? ''
     if (statusName === 'STATUS_FINAL') {
       status = 'final'
-    } else if (statusName === 'STATUS_IN_PROGRESS') {
+    } else if (statusName === 'STATUS_IN_PROGRESS' || statusName === 'STATUS_HALFTIME') {
       status = 'in_progress'
     }
 
