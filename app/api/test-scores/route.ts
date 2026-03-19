@@ -153,7 +153,7 @@ export async function GET(req: NextRequest) {
     )
 
     // Send game result to Slack
-    await sendSlackMessage(text)
+    const gameSlackResult = await sendSlackMessage(text)
 
     // Store the message ID
     await db
@@ -167,10 +167,10 @@ export async function GET(req: NextRequest) {
     // Compute standings via DB function — single atomic query, no stale reads
     const { data: standingsArr } = await db.rpc('get_standings')
 
-    let standingsText = ''
+    let standingsSlackResult: { ok: boolean; status?: number; error?: string } = { ok: false, error: 'no standings' }
     if (standingsArr && standingsArr.length > 0) {
-      standingsText = generateStandingsMessage(standingsArr)
-      await sendSlackMessage(standingsText)
+      const standingsText = generateStandingsMessage(standingsArr)
+      standingsSlackResult = await sendSlackMessage(standingsText)
     }
 
     return NextResponse.json({
@@ -182,6 +182,7 @@ export async function GET(req: NextRequest) {
       loserPickedBy: loserPicks?.map((p) => p.player_name) ?? [],
       messageId,
       slackMessage: text,
+      slackResults: { gameMessage: gameSlackResult, standings: standingsSlackResult },
       standings: standingsArr,
       nextHitWillSend: testCount + 1 < FAKE_MATCHUPS.length
         ? `Game ${testCount + 2}: Seed ${FAKE_MATCHUPS[testCount + 1].winnerSeed} vs Seed ${FAKE_MATCHUPS[testCount + 1].loserSeed}`

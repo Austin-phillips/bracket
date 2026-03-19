@@ -1,15 +1,13 @@
 /**
  * Sends a message to the configured Slack webhook.
- *
- * If SLACK_WEBHOOK_URL is not set, the message is logged to the console instead.
- * Errors are caught and logged — this function never throws.
+ * Returns { ok, status, error } so callers can see if it worked.
  */
-export async function sendSlackMessage(text: string): Promise<void> {
+export async function sendSlackMessage(text: string): Promise<{ ok: boolean; status?: number; error?: string }> {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL
 
   if (!webhookUrl) {
     console.log(`[Slack - no webhook configured] ${text}`)
-    return
+    return { ok: false, error: 'no webhook configured' }
   }
 
   try {
@@ -20,11 +18,14 @@ export async function sendSlackMessage(text: string): Promise<void> {
     })
 
     if (!response.ok) {
-      console.error(
-        `Slack webhook returned ${response.status}: ${response.statusText}`
-      )
+      const body = await response.text().catch(() => '')
+      console.error(`Slack webhook returned ${response.status}: ${body}`)
+      return { ok: false, status: response.status, error: body }
     }
+
+    return { ok: true, status: response.status }
   } catch (error) {
     console.error('Failed to send Slack message:', error)
+    return { ok: false, error: String(error) }
   }
 }
