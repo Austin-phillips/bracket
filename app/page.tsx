@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import Leaderboard from './components/Leaderboard'
 import PlayerCard from './components/PlayerCard'
 import GameFeed from './components/GameFeed'
+import LiveGames from './components/LiveGames'
 import { PlayerStanding } from '@/lib/types'
 
 let _supabase: SupabaseClient | null = null
@@ -45,34 +46,62 @@ interface GameData {
   loser_team: { display_name: string; seed: number } | null
 }
 
+interface LiveGameTeam {
+  name: string
+  seed: number
+  score: string
+  region: string
+  players: string[]
+}
+
+interface LiveGameData {
+  gameId: string
+  status: 'in_progress' | 'scheduled'
+  statusDetail: string
+  clock: string
+  period: number
+  date: string
+  team1: LiveGameTeam
+  team2: LiveGameTeam
+}
+
+const REFRESH_INTERVAL = 30 // seconds
+
 export default function Home() {
   const [standings, setStandings] = useState<PlayerStanding[]>([])
   const [playerTeams, setPlayerTeams] = useState<
     Record<string, { seed: number; team_name: string; region: string; wins: number; is_eliminated: boolean }[]>
   >({})
   const [games, setGames] = useState<GameData[]>([])
+  const [liveGames, setLiveGames] = useState<LiveGameData[]>([])
   const [lastUpdate, setLastUpdate] = useState<string>('')
   const [loading, setLoading] = useState(true)
+  const [countdown, setCountdown] = useState(REFRESH_INTERVAL)
+  const countdownRef = useRef(REFRESH_INTERVAL)
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch picks with joined team data
       const supabase = getSupabase()
-      const { data: picks } = await supabase
-        .from('picks')
-        .select('player_name, seed, team_id, teams(id, name, display_name, seed, region, is_eliminated, wins)')
-        .order('seed')
 
-      // Fetch recent completed games
-      const { data: recentGames } = await supabase
-        .from('games')
-        .select('id, round, winner_score, loser_score, game_date, winner_team:winner_team_id(display_name, seed), loser_team:loser_team_id(display_name, seed)')
-        .eq('status', 'final')
-        .order('game_date', { ascending: false })
-        .limit(20)
+      // Fetch DB data and live games in parallel
+      const [picksRes, gamesRes, liveRes] = await Promise.all([
+        supabase
+          .from('picks')
+          .select('player_name, seed, team_id, teams(id, name, display_name, seed, region, is_eliminated, wins)')
+          .order('seed'),
+        supabase
+          .from('games')
+          .select('id, round, winner_score, loser_score, game_date, winner_team:winner_team_id(display_name, seed), loser_team:loser_team_id(display_name, seed)')
+          .eq('status', 'final')
+          .order('game_date', { ascending: false })
+          .limit(20),
+        fetch('/api/live-games').then((r) => r.json()),
+      ])
+
+      const picks = picksRes.data
+      const recentGames = gamesRes.data
 
       if (picks) {
-        // Calculate standings
         const standingsMap = new Map<string, { points: number; alive: number; total: number }>()
         const teamsMap: Record<string, { seed: number; team_name: string; region: string; wins: number; is_eliminated: boolean }[]> = {}
 
@@ -111,7 +140,13 @@ export default function Home() {
         setGames(recentGames as unknown as GameData[])
       }
 
+      if (liveRes?.games) {
+        setLiveGames(liveRes.games)
+      }
+
       setLastUpdate(new Date().toLocaleTimeString())
+      countdownRef.current = REFRESH_INTERVAL
+      setCountdown(REFRESH_INTERVAL)
     } catch (err) {
       console.error('Failed to fetch data:', err)
     } finally {
@@ -119,11 +154,21 @@ export default function Home() {
     }
   }, [])
 
+  // Data refresh interval
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, 60000) // Refresh every 60s
+    const interval = setInterval(fetchData, REFRESH_INTERVAL * 1000)
     return () => clearInterval(interval)
   }, [fetchData])
+
+  // Countdown ticker
+  useEffect(() => {
+    const tick = setInterval(() => {
+      countdownRef.current = Math.max(0, countdownRef.current - 1)
+      setCountdown(countdownRef.current)
+    }, 1000)
+    return () => clearInterval(tick)
+  }, [])
 
   if (loading) {
     return (
@@ -137,22 +182,35 @@ export default function Home() {
   }
 
   const playerOrder = ['Austin', 'Shane', 'Trey', 'Sean']
+  const hasLiveGames = liveGames.some((g) => g.status === 'in_progress')
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
       <div className="text-center mb-8">
         <h1 className="text-4xl font-bold mb-2">
-          🏀 Bracket Machine
+          Bracket Machine
         </h1>
         <p className="text-gray-400">
           2026 March Madness Pool &middot; 1 point per win
         </p>
-        {lastUpdate && (
-          <p className="text-xs text-gray-600 mt-1">
-            Last updated: {lastUpdate} &middot; Auto-refreshes every 60s
-          </p>
-        )}
+        <div className="flex items-center justify-center gap-2 mt-2">
+          {hasLiveGames && (
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500" />
+              </span>
+              LIVE
+            </span>
+          )}
+          <span className="text-xs text-gray-600">
+            Updated {lastUpdate} &middot; refreshing in {countdown}s
+          </span>
+        </div>
       </div>
+
+      {/* Live / Upcoming Games */}
+      <LiveGames games={liveGames} />
 
       {/* Leaderboard */}
       <div className="mb-8">
@@ -173,7 +231,7 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Game Feed */}
+      {/* Completed Game Feed */}
       <GameFeed games={games} />
     </main>
   )

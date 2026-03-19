@@ -17,6 +17,9 @@ export interface ESPNGame {
   team1: ESPNTeamInfo
   team2: ESPNTeamInfo
   date: string
+  statusDetail: string   // e.g. "12:34 - 2nd Half", "Halftime", "Final"
+  clock: string          // e.g. "12:34"
+  period: number         // e.g. 1 or 2
 }
 
 /**
@@ -81,6 +84,9 @@ export async function fetchTournamentGames(date?: string): Promise<ESPNGame[]> {
       team1,
       team2,
       date: event.date ?? '',
+      statusDetail: statusType?.detail ?? event.status?.type?.shortDetail ?? '',
+      clock: event.status?.displayClock ?? '',
+      period: event.status?.period ?? 0,
     }
   })
 }
