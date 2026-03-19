@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { fetchTournamentGames, normalizeTeamName, ESPNGame } from '@/lib/espn'
 import { sendSlackMessage } from '@/lib/slack'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
+import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
 import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -178,33 +179,42 @@ export async function GET(req: NextRequest) {
       newResults++
       updatedTeams += 2
 
-      // Build Slack message
-      const roundName = ROUND_NAMES[round] ?? `Round ${round}`
-      let msg = `🏀 *${winnerTeam.display_name} ${winnerEspn.score} - ${loserTeam.display_name} ${loserEspn.score}* (${roundName})\n`
-
       // Find which players are affected
       const { data: winnerPicks } = await db
         .from('picks')
-        .select('player_name, seed')
+        .select('player_name')
         .eq('team_id', winnerTeam.id)
 
       const { data: loserPicks } = await db
         .from('picks')
-        .select('player_name, seed')
+        .select('player_name')
         .eq('team_id', loserTeam.id)
 
-      if (winnerPicks && winnerPicks.length > 0) {
-        for (const pick of winnerPicks) {
-          msg += `→ ${pick.player_name} gets +1 (${winnerTeam.display_name}, ${winnerTeam.seed}-seed)\n`
-        }
-      }
-      if (loserPicks && loserPicks.length > 0) {
-        for (const pick of loserPicks) {
-          msg += `❌ ${loserTeam.display_name} eliminated — ${pick.player_name} loses a team\n`
-        }
-      }
+      const roundName = ROUND_NAMES[round] ?? `Round ${round}`
 
-      // Add current standings
+      // Generate funny game message
+      const gameMsg = generateGameMessage({
+        winnerTeam: winnerTeam.display_name,
+        loserTeam: loserTeam.display_name,
+        winnerScore: winnerEspn.score,
+        loserScore: loserEspn.score,
+        winnerSeed: winnerTeam.seed,
+        loserSeed: loserTeam.seed,
+        winnerPlayers: winnerPicks?.map((p) => p.player_name) ?? [],
+        loserPlayers: loserPicks?.map((p) => p.player_name) ?? [],
+        round: roundName,
+      })
+
+      slackMessages.push(gameMsg)
+    }
+
+    // Send Slack notifications and mark as notified
+    for (const msg of slackMessages) {
+      await sendSlackMessage(msg)
+    }
+
+    // Send standings update after all game messages
+    if (slackMessages.length > 0) {
       const { data: allPicks } = await db
         .from('picks')
         .select('player_name, team_id, teams(wins, is_eliminated)')
@@ -221,18 +231,14 @@ export async function GET(req: NextRequest) {
           standings.set(p.player_name, current)
         }
 
-        const sorted = [...standings.entries()].sort(
-          (a, b) => b[1].points - a[1].points
-        )
-        msg += `\n*Standings:* ${sorted.map(([name, s]) => `${name} ${s.points}`).join(' | ')}`
+        const standingsArr = [...standings.entries()].map(([name, s]) => ({
+          name,
+          points: s.points,
+          alive: s.alive,
+        }))
+
+        await sendSlackMessage(generateStandingsMessage(standingsArr))
       }
-
-      slackMessages.push(msg)
-    }
-
-    // Send Slack notifications and mark as notified
-    for (const msg of slackMessages) {
-      await sendSlackMessage(msg)
     }
 
     if (newResults > 0) {
