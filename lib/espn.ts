@@ -39,7 +39,7 @@ export async function fetchTournamentGames(date?: string): Promise<ESPNGame[]> {
   }
 
   const url = `${ESPN_SCOREBOARD_URL}?${params.toString()}`
-  const response = await fetch(url)
+  const response = await fetch(url, { cache: 'no-store' })
 
   if (!response.ok) {
     throw new Error(`ESPN API responded with status ${response.status}: ${response.statusText}`)
