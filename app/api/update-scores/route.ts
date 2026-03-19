@@ -218,23 +218,21 @@ export async function GET(req: NextRequest) {
       slackMessages.push({ text, espnGameId: game.gameId, messageId })
     }
 
-    // Send Slack notifications and store which message was used
-    for (const msg of slackMessages) {
-      await sendSlackMessage(msg.text)
-      await db
-        .from('games')
-        .update({ slack_notified: true, message_id: msg.messageId })
-        .eq('espn_game_id', msg.espnGameId)
-      // Brief pause between messages to avoid Slack rate-limiting
-      await new Promise((r) => setTimeout(r, 1500))
-    }
-
-    // Send standings update after all game messages
-    // Uses DB function — single atomic query, no stale reads
+    // Send Slack notifications — each game result combined with standings
     if (slackMessages.length > 0) {
+      // Get standings once for all messages
       const { data: standingsArr } = await db.rpc('get_standings')
-      if (standingsArr && standingsArr.length > 0) {
-        await sendSlackMessage(generateStandingsMessage(standingsArr))
+      const standingsText = standingsArr?.length > 0
+        ? '\n\n' + generateStandingsMessage(standingsArr)
+        : ''
+
+      for (const msg of slackMessages) {
+        // Combine game result + standings into a single message
+        await sendSlackMessage(msg.text + standingsText)
+        await db
+          .from('games')
+          .update({ slack_notified: true, message_id: msg.messageId })
+          .eq('espn_game_id', msg.espnGameId)
       }
     }
 

@@ -152,26 +152,22 @@ export async function GET(req: NextRequest) {
       usedMessageIds
     )
 
-    // Send game result to Slack
-    const gameSlackResult = await sendSlackMessage(text)
-
     // Store the message ID
     await db
       .from('games')
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
 
-    // Brief pause so Slack doesn't rate-limit the second message
-    await new Promise((r) => setTimeout(r, 1500))
-
     // Compute standings via DB function — single atomic query, no stale reads
     const { data: standingsArr } = await db.rpc('get_standings')
 
-    let standingsSlackResult: { ok: boolean; status?: number; error?: string } = { ok: false, error: 'no standings' }
+    // Combine game result + standings into a single Slack message
+    let fullMessage = text
     if (standingsArr && standingsArr.length > 0) {
-      const standingsText = generateStandingsMessage(standingsArr)
-      standingsSlackResult = await sendSlackMessage(standingsText)
+      fullMessage += '\n\n' + generateStandingsMessage(standingsArr)
     }
+
+    const slackResult = await sendSlackMessage(fullMessage)
 
     return NextResponse.json({
       success: true,
@@ -182,7 +178,7 @@ export async function GET(req: NextRequest) {
       loserPickedBy: loserPicks?.map((p) => p.player_name) ?? [],
       messageId,
       slackMessage: text,
-      slackResults: { gameMessage: gameSlackResult, standings: standingsSlackResult },
+      slackResult,
       standings: standingsArr,
       nextHitWillSend: testCount + 1 < FAKE_MATCHUPS.length
         ? `Game ${testCount + 2}: Seed ${FAKE_MATCHUPS[testCount + 1].winnerSeed} vs Seed ${FAKE_MATCHUPS[testCount + 1].loserSeed}`
