@@ -71,6 +71,25 @@ function detectRound(gameDate: string): number {
   return 6                                 // Championship: Apr 6
 }
 
+// Compute standings from in-memory teams + picks (avoids stale DB reads)
+function computeStandings(
+  teams: Team[],
+  picks: { player_name: string; team_id: number }[]
+): { name: string; points: number; alive: number }[] {
+  const map = new Map<string, { points: number; alive: number }>()
+  for (const pick of picks) {
+    const team = teams.find((t) => t.id === pick.team_id)
+    if (!team) continue
+    const cur = map.get(pick.player_name) ?? { points: 0, alive: 0 }
+    cur.points += team.wins
+    if (!team.is_eliminated) cur.alive++
+    map.set(pick.player_name, cur)
+  }
+  return [...map.entries()]
+    .map(([name, s]) => ({ name, points: s.points, alive: s.alive }))
+    .sort((a, b) => b.points - a.points || b.alive - a.alive)
+}
+
 export async function GET(req: NextRequest) {
   const startTime = Date.now()
   console.log('[PROD] === Update scores endpoint hit ===')
@@ -83,20 +102,22 @@ export async function GET(req: NextRequest) {
   try {
     const db = getSupabaseAdmin()
 
-    // Fetch all teams and existing games from DB in parallel
-    console.log('[PROD] Fetching teams and existing games...')
+    // Fetch all data upfront: teams, existing games, and picks
+    console.log('[PROD] Fetching teams, existing games, and picks...')
     const [
       { data: teams, error: teamsErr },
       { data: existingGames, error: gamesErr },
+      { data: allPicks, error: picksErr },
     ] = await Promise.all([
       db.from('teams').select('*'),
       db.from('games').select('espn_game_id, status, message_id'),
+      db.from('picks').select('player_name, team_id'),
     ])
     if (teamsErr) throw teamsErr
     if (gamesErr) throw gamesErr
+    if (picksErr) throw picksErr
 
-    console.log(`[PROD] Teams loaded: ${teams?.length ?? 0}`)
-    console.log(`[PROD] Existing games in DB: ${existingGames?.length ?? 0}`)
+    console.log(`[PROD] Teams: ${teams?.length ?? 0}, Existing games: ${existingGames?.length ?? 0}, Picks: ${allPicks?.length ?? 0}`)
 
     const processedFinals = new Set(
       existingGames
@@ -234,14 +255,9 @@ export async function GET(req: NextRequest) {
       newResults++
       updatedTeams += 2
 
-      // Find which players are affected
-      const [{ data: winnerPicks }, { data: loserPicks }] = await Promise.all([
-        db.from('picks').select('player_name').eq('team_id', winnerTeam.id),
-        db.from('picks').select('player_name').eq('team_id', loserTeam.id),
-      ])
-
-      const winnerPlayers = winnerPicks?.map((p) => p.player_name) ?? []
-      const loserPlayers = loserPicks?.map((p) => p.player_name) ?? []
+      // Find which players are affected (from in-memory picks)
+      const winnerPlayers = allPicks!.filter((p) => p.team_id === winnerTeam.id).map((p) => p.player_name)
+      const loserPlayers = allPicks!.filter((p) => p.team_id === loserTeam.id).map((p) => p.player_name)
       console.log(`[PROD] Winner picked by: ${winnerPlayers.join(', ') || 'nobody'}`)
       console.log(`[PROD] Loser picked by: ${loserPlayers.join(', ') || 'nobody'}`)
 
@@ -276,20 +292,15 @@ export async function GET(req: NextRequest) {
     if (slackMessages.length > 0) {
       console.log(`[PROD] Sending ${slackMessages.length} Slack notification(s)...`)
 
-      // Get standings once for all messages
-      console.log('[PROD] Fetching standings via RPC...')
-      const { data: standingsArr, error: standingsErr } = await db.rpc('get_standings')
-      if (standingsErr) {
-        console.error('[PROD] get_standings RPC failed:', standingsErr)
-      }
-      console.log(`[PROD] Standings:`, JSON.stringify(standingsArr))
+      // Compute standings from local mutated teams + picks (NO stale DB reads)
+      const standingsArr = computeStandings(teams!, allPicks!)
+      console.log(`[PROD] In-memory standings:`, JSON.stringify(standingsArr))
 
-      const standingsText = standingsArr?.length > 0
+      const standingsText = standingsArr.length > 0
         ? '\n\n' + generateStandingsMessage(standingsArr)
         : ''
 
       for (const msg of slackMessages) {
-        // Combine game result + standings into a single message
         console.log(`[PROD] Sending Slack message for game ${msg.espnGameId}...`)
         const slackResult = await sendSlackMessage(msg.text + standingsText)
         console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
