@@ -65,7 +65,7 @@ interface LiveGameData {
   team2: LiveGameTeam
 }
 
-const REFRESH_INTERVAL = 30 // seconds
+const REFRESH_INTERVAL = 15 // seconds
 
 export default function Home() {
   const [standings, setStandings] = useState<PlayerStanding[]>([])
