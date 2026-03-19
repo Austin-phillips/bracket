@@ -192,6 +192,23 @@ const STANDINGS_TAUNTS = [
 ]
 
 // ---------------------------------------------------------------------------
+// SAME PLAYER ON BOTH SIDES (picked both winner and loser)
+// {sp} = the player who has both teams
+// ---------------------------------------------------------------------------
+const SELF_INFLICTED_MESSAGES: MessageTemplate[] = [
+  { id: 'si1', text: "🤦 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} had teams on BOTH sides. +1 point but also -1 team. {sp} just played themselves." },
+  { id: 'si2', text: "🎭 *{winner} {ws} - {loser} {ls}* ({round})\n{sp}'s {winner} just eliminated {sp}'s {loser}. Friendly fire. Net gain: confused." },
+  { id: 'si3', text: "🔄 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} literally cannot lose this game. Also literally cannot fully win it. The duality of March." },
+  { id: 'si4', text: "🪞 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} vs {sp}. A civil war within {sp}'s own bracket. {winner} survived. {loser} did not." },
+  { id: 'si5', text: "😵‍💫 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} watching their own team eliminate their own team. The emotions are... complicated." },
+  { id: 'si6', text: "🎪 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} drafted both of these teams. One had to die. +1 point, -1 team. {sp} is both happy and sad." },
+  { id: 'si7', text: "💀 *{winner} {ws} - {loser} {ls}* ({round})\n{sp}'s bracket is eating itself. {winner} took out {loser} and they're BOTH {sp}'s picks. You can't make this up." },
+  { id: 'si8', text: "🧠 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} playing 4D chess drafting both sides. Gets a point, loses a team. Balanced, as all things should be." },
+  { id: 'si9', text: "🎲 *{winner} {ws} - {loser} {ls}* ({round})\n{sp} hedged their bets and it... worked? {winner} advances. {loser} is gone. {sp} feels everything and nothing." },
+  { id: 'si10', text: "🤯 *{winner} {ws} - {loser} {ls}* ({round})\nOnly {sp} could manage to hurt themselves and help themselves in the same game. Peak bracket strategy." },
+]
+
+// ---------------------------------------------------------------------------
 // Used message tracking and selection
 // ---------------------------------------------------------------------------
 
@@ -239,13 +256,20 @@ export function generateGameMessage(
   const isBlowout = scoreDiff >= 20
   const isClose = scoreDiff <= 5
 
+  // Check if same player is on both sides
+  const overlap = ctx.winnerPlayers.filter((p) => ctx.loserPlayers.includes(p))
+  const isSelfInflicted = overlap.length > 0
+
   const wp = ctx.winnerPlayers.length > 0 ? ctx.winnerPlayers.join(' & ') : null
   const lp = ctx.loserPlayers.length > 0 ? ctx.loserPlayers.join(' & ') : null
 
   let template: MessageTemplate
 
-  if (wp && lp) {
-    // Both sides picked
+  if (isSelfInflicted) {
+    // Same player picked both teams — special case
+    template = pickUnused(SELF_INFLICTED_MESSAGES, usedMessageIds)
+  } else if (wp && lp) {
+    // Both sides picked by different players
     if (isUpset) {
       template = pickUnused(UPSET_MESSAGES, usedMessageIds)
     } else if (isBlowout) {
@@ -281,6 +305,7 @@ export function generateGameMessage(
     .replace(/{ls}/g, ctx.loserScore)
     .replace(/{wp}/g, wp ?? 'Nobody')
     .replace(/{lp}/g, lp ?? 'Nobody')
+    .replace(/{sp}/g, overlap.join(' & ') || 'Nobody')
     .replace(/{seed_w}/g, ctx.winnerSeed.toString())
     .replace(/{seed_l}/g, ctx.loserSeed.toString())
     .replace(/{round}/g, ctx.round)
