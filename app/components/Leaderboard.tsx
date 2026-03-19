@@ -29,13 +29,14 @@ export default function Leaderboard({ standings }: { standings: PlayerStanding[]
                   {player.teamsAlive}/{player.totalTeams} alive
                 </span>
               </div>
-              <div className="w-full bg-gray-800 rounded-full h-6 overflow-hidden">
+              <div className="w-full bg-gray-800 rounded-full h-6 overflow-hidden relative">
                 <div
-                  className={`h-full rounded-full ${PLAYER_COLORS[player.name] ?? 'bg-gray-600'} flex items-center px-3 transition-all duration-500`}
-                  style={{ width: `${Math.max((player.points / maxPoints) * 100, 12)}%` }}
-                >
-                  <span className="text-sm font-bold">{player.points} pts</span>
-                </div>
+                  className={`h-full rounded-full ${player.points === 0 ? 'bg-gray-700' : (PLAYER_COLORS[player.name] ?? 'bg-gray-600')} transition-all duration-500`}
+                  style={{ width: `${Math.max((player.points / maxPoints) * 100, 8)}%` }}
+                />
+                <span className="absolute inset-0 flex items-center px-3 text-sm font-bold">
+                  {player.points} pts
+                </span>
               </div>
             </div>
           </div>
