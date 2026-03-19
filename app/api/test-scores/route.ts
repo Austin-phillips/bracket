@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { sendSlackMessage } from '@/lib/slack'
 import { ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
+import { queryStandings } from '@/lib/standings'
 import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -155,44 +156,10 @@ export async function GET(req: NextRequest) {
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
 
-    // Compute standings from games table (source of truth).
-    // teams.wins can be stale across requests due to Supabase connection pooling,
-    // so we count wins directly from completed game records instead.
-    const { data: allFinalGames } = await db
-      .from('games')
-      .select('winner_team_id, loser_team_id')
-      .eq('status', 'final')
-
-    const { data: allPicks } = await db.from('picks').select('player_name, team_id')
-
+    // Query standings from games table (source of truth)
+    const standingsArr = await queryStandings(db)
     let standingsText = ''
-    if (allPicks) {
-      // Build win counts and eliminations from the games table
-      const teamWins = new Map<number, number>()
-      const teamEliminated = new Set<number>()
-      for (const g of (allFinalGames ?? [])) {
-        teamWins.set(g.winner_team_id, (teamWins.get(g.winner_team_id) ?? 0) + 1)
-        teamEliminated.add(g.loser_team_id)
-      }
-
-      // Ensure current game is counted even if not yet visible in DB read
-      teamWins.set(winnerTeam.id, Math.max(teamWins.get(winnerTeam.id) ?? 0, 1))
-      teamEliminated.add(loserTeam.id)
-
-      const standings = new Map<string, { points: number; alive: number }>()
-      for (const p of allPicks) {
-        const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
-        current.points += teamWins.get(p.team_id) ?? 0
-        if (!teamEliminated.has(p.team_id)) current.alive++
-        standings.set(p.player_name, current)
-      }
-
-      const standingsArr = [...standings.entries()].map(([name, s]) => ({
-        name,
-        points: s.points,
-        alive: s.alive,
-      }))
-
+    if (standingsArr.length > 0) {
       standingsText = generateStandingsMessage(standingsArr)
       await sendSlackMessage(standingsText)
     }

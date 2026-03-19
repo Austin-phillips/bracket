@@ -4,6 +4,7 @@ import { fetchTournamentGames, normalizeTeamName, ESPNGame } from '@/lib/espn'
 import { sendSlackMessage } from '@/lib/slack'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
+import { queryStandings } from '@/lib/standings'
 import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -229,38 +230,8 @@ export async function GET(req: NextRequest) {
 
     // Send standings update after all game messages
     if (slackMessages.length > 0) {
-      // Compute standings from games table (source of truth).
-      // teams.wins can be stale due to Supabase connection pooling,
-      // so we count wins directly from completed game records.
-      const { data: allFinalGames } = await db
-        .from('games')
-        .select('winner_team_id, loser_team_id')
-        .eq('status', 'final')
-
-      const { data: allPicks } = await db.from('picks').select('player_name, team_id')
-
-      if (allPicks) {
-        const teamWins = new Map<number, number>()
-        const teamEliminated = new Set<number>()
-        for (const g of (allFinalGames ?? [])) {
-          teamWins.set(g.winner_team_id, (teamWins.get(g.winner_team_id) ?? 0) + 1)
-          teamEliminated.add(g.loser_team_id)
-        }
-
-        const standings = new Map<string, { points: number; alive: number }>()
-        for (const p of allPicks) {
-          const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
-          current.points += teamWins.get(p.team_id) ?? 0
-          if (!teamEliminated.has(p.team_id)) current.alive++
-          standings.set(p.player_name, current)
-        }
-
-        const standingsArr = [...standings.entries()].map(([name, s]) => ({
-          name,
-          points: s.points,
-          alive: s.alive,
-        }))
-
+      const standingsArr = await queryStandings(db)
+      if (standingsArr.length > 0) {
         await sendSlackMessage(generateStandingsMessage(standingsArr))
       }
     }
