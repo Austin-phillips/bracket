@@ -113,6 +113,10 @@ export async function GET(req: NextRequest) {
       if (processedFinals.has(game.gameId)) continue
       if (!game.completed) continue
 
+      // Skip First Four games — only count Round of 64 onward
+      const round = detectRound(game.date)
+      if (round === 0) continue
+
       // Find the winner and loser
       const winnerEspn = game.team1.winner ? game.team1 : game.team2
       const loserEspn = game.team1.winner ? game.team2 : game.team1
@@ -126,8 +130,6 @@ export async function GET(req: NextRequest) {
         )
         continue
       }
-
-      const round = detectRound(game.date)
 
       // Upsert the game record
       const { error: upsertErr } = await db.from('games').upsert(
