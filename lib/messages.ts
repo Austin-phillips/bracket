@@ -310,7 +310,7 @@ export function generateGameMessage(
     .replace(/{seed_l}/g, ctx.loserSeed.toString())
     .replace(/{round}/g, ctx.round)
 
-  return { text, messageId: template.id }
+  return { text: text + '\n\n<https://bracket-steel.vercel.app/|📊 View Dashboard>', messageId: template.id }
 }
 
 export function generateStandingsMessage(
