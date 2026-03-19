@@ -152,17 +152,18 @@ export async function GET(req: NextRequest) {
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
 
-    // Send standings using real updated data
-    const { data: allPicks } = await db
-      .from('picks')
-      .select('player_name, team_id, teams(wins, is_eliminated)')
+    // Fetch fresh teams + picks separately to avoid stale join data
+    const { data: freshTeams } = await db.from('teams').select('id, wins, is_eliminated')
+    const { data: allPicks } = await db.from('picks').select('player_name, team_id')
 
     let standingsText = ''
-    if (allPicks) {
+    if (allPicks && freshTeams) {
+      const teamMap = new Map(freshTeams.map((t) => [t.id, t]))
       const standings = new Map<string, { points: number; alive: number }>()
-      for (const p of allPicks as any[]) {
+
+      for (const p of allPicks) {
         const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
-        const team = p.teams
+        const team = teamMap.get(p.team_id)
         if (team) {
           current.points += team.wins ?? 0
           if (!team.is_eliminated) current.alive++
