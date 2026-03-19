@@ -29,7 +29,8 @@ CREATE TABLE games (
   loser_score INTEGER,
   status TEXT DEFAULT 'scheduled',
   game_date TIMESTAMPTZ,
-  slack_notified BOOLEAN DEFAULT FALSE
+  slack_notified BOOLEAN DEFAULT FALSE,
+  message_id TEXT
 );
 
 -- Enable Row Level Security

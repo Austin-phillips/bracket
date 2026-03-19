@@ -88,13 +88,20 @@ export async function GET(req: NextRequest) {
     // Fetch existing games from DB to avoid re-processing
     const { data: existingGames, error: gamesErr } = await db
       .from('games')
-      .select('espn_game_id, status')
+      .select('espn_game_id, status, message_id')
     if (gamesErr) throw gamesErr
 
     const processedFinals = new Set(
       existingGames
         ?.filter((g) => g.status === 'final')
         .map((g) => g.espn_game_id) ?? []
+    )
+
+    // Load all previously used message IDs so we never repeat
+    const usedMessageIds = new Set(
+      existingGames
+        ?.map((g) => g.message_id)
+        .filter(Boolean) as string[] ?? []
     )
 
     // Fetch games from ESPN without date filter to catch all active tournament games
@@ -107,7 +114,7 @@ export async function GET(req: NextRequest) {
 
     let newResults = 0
     let updatedTeams = 0
-    const slackMessages: string[] = []
+    const slackMessages: { text: string; espnGameId: string; messageId: string }[] = []
 
     for (const game of uniqueGames.values()) {
       // Skip games we've already fully processed
@@ -192,25 +199,32 @@ export async function GET(req: NextRequest) {
 
       const roundName = ROUND_NAMES[round] ?? `Round ${round}`
 
-      // Generate funny game message
-      const gameMsg = generateGameMessage({
-        winnerTeam: winnerTeam.display_name,
-        loserTeam: loserTeam.display_name,
-        winnerScore: winnerEspn.score,
-        loserScore: loserEspn.score,
-        winnerSeed: winnerTeam.seed,
-        loserSeed: loserTeam.seed,
-        winnerPlayers: winnerPicks?.map((p) => p.player_name) ?? [],
-        loserPlayers: loserPicks?.map((p) => p.player_name) ?? [],
-        round: roundName,
-      })
+      // Generate a unique funny message (never repeats)
+      const { text, messageId } = generateGameMessage(
+        {
+          winnerTeam: winnerTeam.display_name,
+          loserTeam: loserTeam.display_name,
+          winnerScore: winnerEspn.score,
+          loserScore: loserEspn.score,
+          winnerSeed: winnerTeam.seed,
+          loserSeed: loserTeam.seed,
+          winnerPlayers: winnerPicks?.map((p) => p.player_name) ?? [],
+          loserPlayers: loserPicks?.map((p) => p.player_name) ?? [],
+          round: roundName,
+        },
+        usedMessageIds
+      )
 
-      slackMessages.push(gameMsg)
+      slackMessages.push({ text, espnGameId: game.gameId, messageId })
     }
 
-    // Send Slack notifications and mark as notified
+    // Send Slack notifications and store which message was used
     for (const msg of slackMessages) {
-      await sendSlackMessage(msg)
+      await sendSlackMessage(msg.text)
+      await db
+        .from('games')
+        .update({ slack_notified: true, message_id: msg.messageId })
+        .eq('espn_game_id', msg.espnGameId)
     }
 
     // Send standings update after all game messages
@@ -239,14 +253,6 @@ export async function GET(req: NextRequest) {
 
         await sendSlackMessage(generateStandingsMessage(standingsArr))
       }
-    }
-
-    if (newResults > 0) {
-      await db
-        .from('games')
-        .update({ slack_notified: true })
-        .eq('slack_notified', false)
-        .eq('status', 'final')
     }
 
     return NextResponse.json({
