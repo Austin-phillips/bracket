@@ -62,7 +62,7 @@ function detectRound(gameDate: string): number {
   const day = d.getDate()
 
   // 2026 tournament dates (approximate)
-  if (month === 3 && day <= 19) return 0  // First Four: Mar 18-19
+  if (month === 3 && day <= 18) return 0  // First Four: Mar 17-18
   if (month === 3 && day <= 22) return 1  // Round of 64: Mar 20-21
   if (month === 3 && day <= 24) return 2  // Round of 32: Mar 22-23
   if (month === 3 && day <= 28) return 3  // Sweet 16: Mar 27-28
