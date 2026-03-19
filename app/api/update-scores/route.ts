@@ -3,7 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { fetchTournamentGames, normalizeTeamName, ESPNGame } from '@/lib/espn'
 import { sendSlackMessage } from '@/lib/slack'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
-import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
+import { generateGameMessage } from '@/lib/messages'
 import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -71,24 +71,6 @@ function detectRound(gameDate: string): number {
   return 6                                 // Championship: Apr 6
 }
 
-// Compute standings from in-memory teams + picks (avoids stale DB reads)
-function computeStandings(
-  teams: Team[],
-  picks: { player_name: string; team_id: number }[]
-): { name: string; points: number; alive: number }[] {
-  const map = new Map<string, { points: number; alive: number }>()
-  for (const pick of picks) {
-    const team = teams.find((t) => t.id === pick.team_id)
-    if (!team) continue
-    const cur = map.get(pick.player_name) ?? { points: 0, alive: 0 }
-    cur.points += team.wins
-    if (!team.is_eliminated) cur.alive++
-    map.set(pick.player_name, cur)
-  }
-  return [...map.entries()]
-    .map(([name, s]) => ({ name, points: s.points, alive: s.alive }))
-    .sort((a, b) => b.points - a.points || b.alive - a.alive)
-}
 
 export async function GET(req: NextRequest) {
   const startTime = Date.now()
@@ -292,17 +274,9 @@ export async function GET(req: NextRequest) {
     if (slackMessages.length > 0) {
       console.log(`[PROD] Sending ${slackMessages.length} Slack notification(s)...`)
 
-      // Compute standings from local mutated teams + picks (NO stale DB reads)
-      const standingsArr = computeStandings(teams!, allPicks!)
-      console.log(`[PROD] In-memory standings:`, JSON.stringify(standingsArr))
-
-      const standingsText = standingsArr.length > 0
-        ? '\n\n' + generateStandingsMessage(standingsArr)
-        : ''
-
       for (const msg of slackMessages) {
         console.log(`[PROD] Sending Slack message for game ${msg.espnGameId}...`)
-        const slackResult = await sendSlackMessage(msg.text + standingsText)
+        const slackResult = await sendSlackMessage(msg.text)
         console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
 
         await db
