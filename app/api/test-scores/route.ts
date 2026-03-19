@@ -155,27 +155,35 @@ export async function GET(req: NextRequest) {
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
 
-    // Build standings in memory — DB reads can be stale after writes
-    // Apply this game's result to the in-memory teams array we already have
-    const winnerIdx = teams!.findIndex((t: Team) => t.id === winnerTeam.id)
-    const loserIdx = teams!.findIndex((t: Team) => t.id === loserTeam.id)
-    if (winnerIdx >= 0) teams![winnerIdx].wins += 1
-    if (loserIdx >= 0) teams![loserIdx].is_eliminated = true
+    // Compute standings from games table (source of truth).
+    // teams.wins can be stale across requests due to Supabase connection pooling,
+    // so we count wins directly from completed game records instead.
+    const { data: allFinalGames } = await db
+      .from('games')
+      .select('winner_team_id, loser_team_id')
+      .eq('status', 'final')
 
     const { data: allPicks } = await db.from('picks').select('player_name, team_id')
 
     let standingsText = ''
-    if (allPicks && teams) {
-      const teamMap = new Map(teams.map((t: Team) => [t.id, t]))
-      const standings = new Map<string, { points: number; alive: number }>()
+    if (allPicks) {
+      // Build win counts and eliminations from the games table
+      const teamWins = new Map<number, number>()
+      const teamEliminated = new Set<number>()
+      for (const g of (allFinalGames ?? [])) {
+        teamWins.set(g.winner_team_id, (teamWins.get(g.winner_team_id) ?? 0) + 1)
+        teamEliminated.add(g.loser_team_id)
+      }
 
+      // Ensure current game is counted even if not yet visible in DB read
+      teamWins.set(winnerTeam.id, Math.max(teamWins.get(winnerTeam.id) ?? 0, 1))
+      teamEliminated.add(loserTeam.id)
+
+      const standings = new Map<string, { points: number; alive: number }>()
       for (const p of allPicks) {
         const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
-        const team = teamMap.get(p.team_id)
-        if (team) {
-          current.points += team.wins ?? 0
-          if (!team.is_eliminated) current.alive++
-        }
+        current.points += teamWins.get(p.team_id) ?? 0
+        if (!teamEliminated.has(p.team_id)) current.alive++
         standings.set(p.player_name, current)
       }
 
