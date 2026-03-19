@@ -230,32 +230,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Send standings update after all game messages
-    // Computed entirely in memory — Supabase connection pool returns stale reads.
-    // The `teams` array was already mutated during the game loop above
-    // (winnerTeam.wins += 1, loserTeam.is_eliminated = true), so it's up to date.
+    // Uses DB function — single atomic query, no stale reads
     if (slackMessages.length > 0) {
-      const { data: allPicks } = await db.from('picks').select('player_name, team_id')
-
-      if (allPicks && teams) {
-        const teamMap = new Map(teams.map((t: Team) => [t.id, t]))
-        const standings = new Map<string, { points: number; alive: number }>()
-
-        for (const p of allPicks) {
-          const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
-          const team = teamMap.get(p.team_id)
-          if (team) {
-            current.points += team.wins ?? 0
-            if (!team.is_eliminated) current.alive++
-          }
-          standings.set(p.player_name, current)
-        }
-
-        const standingsArr = [...standings.entries()].map(([name, s]) => ({
-          name,
-          points: s.points,
-          alive: s.alive,
-        }))
-
+      const { data: standingsArr } = await db.rpc('get_standings')
+      if (standingsArr && standingsArr.length > 0) {
         await sendSlackMessage(generateStandingsMessage(standingsArr))
       }
     }
