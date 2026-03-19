@@ -4,7 +4,6 @@ import { fetchTournamentGames, normalizeTeamName, ESPNGame } from '@/lib/espn'
 import { sendSlackMessage } from '@/lib/slack'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
-import { queryStandings } from '@/lib/standings'
 import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -231,9 +230,32 @@ export async function GET(req: NextRequest) {
     }
 
     // Send standings update after all game messages
+    // Computed entirely in memory — Supabase connection pool returns stale reads.
+    // The `teams` array was already mutated during the game loop above
+    // (winnerTeam.wins += 1, loserTeam.is_eliminated = true), so it's up to date.
     if (slackMessages.length > 0) {
-      const { standings: standingsArr } = await queryStandings(db)
-      if (standingsArr.length > 0) {
+      const { data: allPicks } = await db.from('picks').select('player_name, team_id')
+
+      if (allPicks && teams) {
+        const teamMap = new Map(teams.map((t: Team) => [t.id, t]))
+        const standings = new Map<string, { points: number; alive: number }>()
+
+        for (const p of allPicks) {
+          const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
+          const team = teamMap.get(p.team_id)
+          if (team) {
+            current.points += team.wins ?? 0
+            if (!team.is_eliminated) current.alive++
+          }
+          standings.set(p.player_name, current)
+        }
+
+        const standingsArr = [...standings.entries()].map(([name, s]) => ({
+          name,
+          points: s.points,
+          alive: s.alive,
+        }))
+
         await sendSlackMessage(generateStandingsMessage(standingsArr))
       }
     }

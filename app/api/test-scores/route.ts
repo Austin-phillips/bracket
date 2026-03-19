@@ -3,7 +3,6 @@ import { getSupabaseAdmin } from '@/lib/supabase'
 import { sendSlackMessage } from '@/lib/slack'
 import { ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
-import { queryStandings } from '@/lib/standings'
 import { Team } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -38,9 +37,16 @@ export async function GET(req: NextRequest) {
   try {
     const db = getSupabaseAdmin()
 
-    // Fetch all teams
-    const { data: teams, error: teamsErr } = await db.from('teams').select('*')
+    // Fetch all teams and picks upfront — these are stable and won't be stale
+    const [
+      { data: teams, error: teamsErr },
+      { data: allPicks, error: picksErr },
+    ] = await Promise.all([
+      db.from('teams').select('*'),
+      db.from('picks').select('player_name, team_id'),
+    ])
     if (teamsErr) throw teamsErr
+    if (picksErr) throw picksErr
 
     // Check which test games have already been fully processed (slack_notified = true)
     const testIds = FAKE_MATCHUPS.map((_, i) => `test-${i + 1}`)
@@ -165,8 +171,43 @@ export async function GET(req: NextRequest) {
     // Brief pause so Slack doesn't rate-limit the second message
     await new Promise((r) => setTimeout(r, 1500))
 
-    // Query standings from games table (source of truth)
-    const { standings: standingsArr, debug: standingsDebug } = await queryStandings(db, true)
+    // ---------------------------------------------------------------
+    // Compute standings entirely in memory — no DB re-query.
+    // Supabase connection pooling returns stale snapshots, so we
+    // replay all completed test matchups + the current game to build
+    // accurate win counts from data we already have.
+    // ---------------------------------------------------------------
+    const teamWins = new Map<number, number>()
+    const teamEliminated = new Set<number>()
+
+    // Replay all previously completed test games
+    for (let i = 0; i < testCount; i++) {
+      const m = FAKE_MATCHUPS[i]
+      const w = teams!.find((t: Team) => t.seed === m.winnerSeed && t.region === m.winnerRegion)
+      const l = teams!.find((t: Team) => t.seed === m.loserSeed && t.region === m.loserRegion)
+      if (w) teamWins.set(w.id, (teamWins.get(w.id) ?? 0) + 1)
+      if (l) teamEliminated.add(l.id)
+    }
+
+    // Add current game
+    teamWins.set(winnerTeam.id, (teamWins.get(winnerTeam.id) ?? 0) + 1)
+    teamEliminated.add(loserTeam.id)
+
+    // Build standings from picks + computed wins
+    const standings = new Map<string, { points: number; alive: number }>()
+    for (const p of (allPicks ?? [])) {
+      const current = standings.get(p.player_name) ?? { points: 0, alive: 0 }
+      current.points += teamWins.get(p.team_id) ?? 0
+      if (!teamEliminated.has(p.team_id)) current.alive++
+      standings.set(p.player_name, current)
+    }
+
+    const standingsArr = [...standings.entries()].map(([name, s]) => ({
+      name,
+      points: s.points,
+      alive: s.alive,
+    }))
+
     let standingsText = ''
     if (standingsArr.length > 0) {
       standingsText = generateStandingsMessage(standingsArr)
@@ -178,16 +219,11 @@ export async function GET(req: NextRequest) {
       testGame: testCount + 1,
       totalTests: FAKE_MATCHUPS.length,
       matchup: `${winnerTeam.display_name} (${winnerTeam.seed}) ${matchup.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${matchup.loserScore}`,
-      winnerTeamId: winnerTeam.id,
-      loserTeamId: loserTeam.id,
       winnerPickedBy: winnerPicks?.map((p) => p.player_name) ?? [],
       loserPickedBy: loserPicks?.map((p) => p.player_name) ?? [],
       messageId,
       slackMessage: text,
-      debug: {
-        standingsComputed: standingsArr,
-        standingsDebug,
-      },
+      standings: standingsArr,
       nextHitWillSend: testCount + 1 < FAKE_MATCHUPS.length
         ? `Game ${testCount + 2}: Seed ${FAKE_MATCHUPS[testCount + 1].winnerSeed} vs Seed ${FAKE_MATCHUPS[testCount + 1].loserSeed}`
         : 'All tests complete!',
