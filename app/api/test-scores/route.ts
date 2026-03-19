@@ -22,37 +22,47 @@ const FAKE_MATCHUPS = [
 ]
 
 export async function GET(req: NextRequest) {
+  const startTime = Date.now()
+  console.log('[TEST] === Test scores endpoint hit ===')
+
   try {
     const db = getSupabaseAdmin()
 
-    // All reads that touch data we also WRITE use RPC to avoid stale snapshots.
-    // Teams + picks are static (never written by this route's logic), so direct reads are safe.
+    // Use ?game=N query param to specify which game (1-indexed)
+    const gameParam = req.nextUrl.searchParams.get('game')
+    const gameNumber = gameParam ? parseInt(gameParam) : null
 
+    if (!gameNumber || gameNumber < 1 || gameNumber > FAKE_MATCHUPS.length) {
+      return NextResponse.json({
+        error: `Provide ?game=N where N is 1-${FAKE_MATCHUPS.length}`,
+        usage: `${req.nextUrl.origin}/api/test-scores?game=1`,
+        totalGames: FAKE_MATCHUPS.length,
+      }, { status: 400 })
+    }
+
+    console.log(`[TEST] Requested game: ${gameNumber}/${FAKE_MATCHUPS.length}`)
+
+    // Fetch teams and message IDs in parallel
+    console.log('[TEST] Fetching teams and message IDs...')
     const [
       { data: teams, error: teamsErr },
-      { data: testCountResult },
       { data: allMessageIds },
     ] = await Promise.all([
       db.from('teams').select('*'),
-      db.rpc('count_test_games'),
-      // Load all used message IDs to avoid repeats (cosmetic, not critical)
       db.from('games').select('message_id').not('message_id', 'is', null),
     ])
     if (teamsErr) throw teamsErr
 
-    const testCount: number = testCountResult ?? 0
     const usedMessageIds = new Set(
       (allMessageIds ?? []).map((g: { message_id: string }) => g.message_id)
     )
 
-    if (testCount >= FAKE_MATCHUPS.length) {
-      return NextResponse.json({
-        message: `All ${FAKE_MATCHUPS.length} test games already sent. Clean up test data to re-run.`,
-      })
-    }
+    console.log(`[TEST] Teams loaded: ${teams?.length ?? 0}`)
+    console.log(`[TEST] Used message IDs: ${usedMessageIds.size}`)
 
+    const testCount = gameNumber - 1
     const matchup = FAKE_MATCHUPS[testCount]
-    const fakeGameId = `test-${testCount + 1}`
+    const fakeGameId = `test-${gameNumber}`
 
     const winnerTeam = teams!.find(
       (t: Team) => t.seed === matchup.winnerSeed && t.region === matchup.winnerRegion
@@ -62,14 +72,18 @@ export async function GET(req: NextRequest) {
     )
 
     if (!winnerTeam || !loserTeam) {
+      console.error(`[TEST] Could not find teams for matchup:`, matchup)
       return NextResponse.json({
         error: 'Could not find teams for matchup',
         matchup,
       }, { status: 500 })
     }
 
-    // Upsert game record — safe if stale count causes a re-run of the same game
-    await db.from('games').upsert(
+    console.log(`[TEST] Game ${gameNumber}: ${winnerTeam.display_name} (${winnerTeam.seed}) vs ${loserTeam.display_name} (${loserTeam.seed})`)
+
+    // Upsert game record
+    console.log(`[TEST] Upserting game record: ${fakeGameId}`)
+    const { error: upsertErr } = await db.from('games').upsert(
       {
         espn_game_id: fakeGameId,
         round: matchup.round,
@@ -83,23 +97,27 @@ export async function GET(req: NextRequest) {
       },
       { onConflict: 'espn_game_id' }
     )
+    if (upsertErr) {
+      console.error(`[TEST] Game upsert failed:`, upsertErr)
+      throw upsertErr
+    }
+    console.log(`[TEST] Game upserted successfully`)
 
-    // Update team stats (same as prod route does)
-    await db
-      .from('teams')
-      .update({ wins: winnerTeam.wins + 1 })
-      .eq('id', winnerTeam.id)
+    // Update team stats
+    console.log(`[TEST] Updating team stats: ${winnerTeam.display_name} wins+1, ${loserTeam.display_name} eliminated`)
+    await db.from('teams').update({ wins: winnerTeam.wins + 1 }).eq('id', winnerTeam.id)
+    await db.from('teams').update({ is_eliminated: true }).eq('id', loserTeam.id)
 
-    await db
-      .from('teams')
-      .update({ is_eliminated: true })
-      .eq('id', loserTeam.id)
-
-    // Find which players picked these teams (picks are static, safe to read)
+    // Find which players picked these teams
     const [{ data: winnerPicks }, { data: loserPicks }] = await Promise.all([
       db.from('picks').select('player_name').eq('team_id', winnerTeam.id),
       db.from('picks').select('player_name').eq('team_id', loserTeam.id),
     ])
+
+    const winnerPlayers = winnerPicks?.map((p) => p.player_name) ?? []
+    const loserPlayers = loserPicks?.map((p) => p.player_name) ?? []
+    console.log(`[TEST] Winner picked by: ${winnerPlayers.join(', ') || 'nobody'}`)
+    console.log(`[TEST] Loser picked by: ${loserPlayers.join(', ') || 'nobody'}`)
 
     const roundName = ROUND_NAMES[matchup.round] ?? `Round ${matchup.round}`
 
@@ -111,21 +129,28 @@ export async function GET(req: NextRequest) {
         loserScore: matchup.loserScore.toString(),
         winnerSeed: winnerTeam.seed,
         loserSeed: loserTeam.seed,
-        winnerPlayers: winnerPicks?.map((p) => p.player_name) ?? [],
-        loserPlayers: loserPicks?.map((p) => p.player_name) ?? [],
+        winnerPlayers,
+        loserPlayers,
         round: roundName,
       },
       usedMessageIds
     )
+    console.log(`[TEST] Generated message ID: ${messageId}`)
 
     // Mark as notified + store message ID
     await db
       .from('games')
       .update({ slack_notified: true, message_id: messageId })
       .eq('espn_game_id', fakeGameId)
+    console.log(`[TEST] Marked ${fakeGameId} as slack_notified`)
 
-    // Get standings via RPC (atomic, always fresh)
-    const { data: standingsArr } = await db.rpc('get_standings')
+    // Get standings via RPC
+    console.log('[TEST] Fetching standings via RPC...')
+    const { data: standingsArr, error: standingsErr } = await db.rpc('get_standings')
+    if (standingsErr) {
+      console.error('[TEST] get_standings RPC failed:', standingsErr)
+    }
+    console.log(`[TEST] Standings:`, JSON.stringify(standingsArr))
 
     // Send single combined message to Slack
     let fullMessage = text
@@ -133,24 +158,31 @@ export async function GET(req: NextRequest) {
       fullMessage += '\n\n' + generateStandingsMessage(standingsArr)
     }
 
+    console.log('[TEST] Sending combined message to Slack...')
     const slackResult = await sendSlackMessage(fullMessage)
+    console.log(`[TEST] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
+
+    const elapsed = Date.now() - startTime
+    console.log(`[TEST] === Done in ${elapsed}ms. Game ${gameNumber}/${FAKE_MATCHUPS.length} sent ===`)
 
     return NextResponse.json({
       success: true,
-      testGame: testCount + 1,
+      testGame: gameNumber,
       totalTests: FAKE_MATCHUPS.length,
       matchup: `${winnerTeam.display_name} (${winnerTeam.seed}) ${matchup.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${matchup.loserScore}`,
-      winnerPickedBy: winnerPicks?.map((p) => p.player_name) ?? [],
-      loserPickedBy: loserPicks?.map((p) => p.player_name) ?? [],
+      winnerPickedBy: winnerPlayers,
+      loserPickedBy: loserPlayers,
       messageId,
       slackResult,
       standings: standingsArr,
-      nextHitWillSend: testCount + 1 < FAKE_MATCHUPS.length
-        ? `Game ${testCount + 2}: Seed ${FAKE_MATCHUPS[testCount + 1].winnerSeed} vs Seed ${FAKE_MATCHUPS[testCount + 1].loserSeed}`
+      elapsed: `${elapsed}ms`,
+      next: gameNumber < FAKE_MATCHUPS.length
+        ? `${req.nextUrl.origin}/api/test-scores?game=${gameNumber + 1}`
         : 'All tests complete!',
     })
   } catch (error) {
-    console.error('Test scores error:', error)
+    const elapsed = Date.now() - startTime
+    console.error(`[TEST] === FAILED after ${elapsed}ms ===`, error)
     return NextResponse.json(
       { error: 'Internal server error', details: String(error) },
       { status: 500 }
