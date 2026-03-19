@@ -165,6 +165,11 @@ export async function GET(req: NextRequest) {
     // Brief pause so Slack doesn't rate-limit the second message
     await new Promise((r) => setTimeout(r, 1500))
 
+    // Debug: show all games in DB so we can verify standings source data
+    const { data: allGamesDebug } = await db
+      .from('games')
+      .select('espn_game_id, winner_team_id, loser_team_id, status, slack_notified')
+
     // Query standings from games table (source of truth)
     const standingsArr = await queryStandings(db)
     let standingsText = ''
@@ -182,6 +187,10 @@ export async function GET(req: NextRequest) {
       loserPickedBy: loserPicks?.map((p) => p.player_name) ?? [],
       messageId,
       slackMessage: text,
+      debug: {
+        allGamesInDb: allGamesDebug,
+        standingsComputed: standingsArr,
+      },
       nextHitWillSend: testCount + 1 < FAKE_MATCHUPS.length
         ? `Game ${testCount + 2}: Seed ${FAKE_MATCHUPS[testCount + 1].winnerSeed} vs Seed ${FAKE_MATCHUPS[testCount + 1].loserSeed}`
         : 'All tests complete!',
