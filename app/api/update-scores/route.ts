@@ -72,30 +72,38 @@ function detectRound(gameDate: string): number {
 }
 
 export async function GET(req: NextRequest) {
+  const startTime = Date.now()
+  console.log('[PROD] === Update scores endpoint hit ===')
+
   if (!isAuthorized(req)) {
+    console.log('[PROD] Unauthorized request — rejecting')
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
   try {
     const db = getSupabaseAdmin()
 
-    // Fetch all teams from DB
-    const { data: teams, error: teamsErr } = await db
-      .from('teams')
-      .select('*')
+    // Fetch all teams and existing games from DB in parallel
+    console.log('[PROD] Fetching teams and existing games...')
+    const [
+      { data: teams, error: teamsErr },
+      { data: existingGames, error: gamesErr },
+    ] = await Promise.all([
+      db.from('teams').select('*'),
+      db.from('games').select('espn_game_id, status, message_id'),
+    ])
     if (teamsErr) throw teamsErr
-
-    // Fetch existing games from DB to avoid re-processing
-    const { data: existingGames, error: gamesErr } = await db
-      .from('games')
-      .select('espn_game_id, status, message_id')
     if (gamesErr) throw gamesErr
+
+    console.log(`[PROD] Teams loaded: ${teams?.length ?? 0}`)
+    console.log(`[PROD] Existing games in DB: ${existingGames?.length ?? 0}`)
 
     const processedFinals = new Set(
       existingGames
         ?.filter((g) => g.status === 'final')
         .map((g) => g.espn_game_id) ?? []
     )
+    console.log(`[PROD] Already-processed finals: ${processedFinals.size}`)
 
     // Load all previously used message IDs so we never repeat
     const usedMessageIds = new Set(
@@ -103,27 +111,56 @@ export async function GET(req: NextRequest) {
         ?.map((g) => g.message_id)
         .filter(Boolean) as string[] ?? []
     )
+    console.log(`[PROD] Used message IDs: ${usedMessageIds.size}`)
 
-    // Fetch games from ESPN without date filter to catch all active tournament games
+    // Fetch games from ESPN
+    console.log('[PROD] Fetching tournament games from ESPN...')
     const espnGames = await fetchTournamentGames()
+    console.log(`[PROD] ESPN returned ${espnGames.length} games`)
 
     const uniqueGames = new Map<string, ESPNGame>()
     for (const g of espnGames) {
       uniqueGames.set(g.gameId, g)
     }
+    console.log(`[PROD] Unique games after dedup: ${uniqueGames.size}`)
+
+    // Log summary of ESPN game statuses
+    let completedCount = 0
+    let inProgressCount = 0
+    let scheduledCount = 0
+    for (const g of uniqueGames.values()) {
+      if (g.completed) completedCount++
+      else if (g.date) scheduledCount++
+      else inProgressCount++
+    }
+    console.log(`[PROD] ESPN game statuses — completed: ${completedCount}, in-progress: ${inProgressCount}, scheduled: ${scheduledCount}`)
 
     let newResults = 0
     let updatedTeams = 0
+    let skippedAlreadyProcessed = 0
+    let skippedNotCompleted = 0
+    let skippedFirstFour = 0
+    let skippedNoMatch = 0
     const slackMessages: { text: string; espnGameId: string; messageId: string }[] = []
 
     for (const game of uniqueGames.values()) {
       // Skip games we've already fully processed
-      if (processedFinals.has(game.gameId)) continue
-      if (!game.completed) continue
+      if (processedFinals.has(game.gameId)) {
+        skippedAlreadyProcessed++
+        continue
+      }
+      if (!game.completed) {
+        skippedNotCompleted++
+        continue
+      }
 
       // Skip First Four games — only count Round of 64 onward
       const round = detectRound(game.date)
-      if (round === 0) continue
+      if (round === 0) {
+        skippedFirstFour++
+        console.log(`[PROD] Skipping First Four game: ${game.gameId}`)
+        continue
+      }
 
       // Find the winner and loser
       const winnerEspn = game.team1.winner ? game.team1 : game.team2
@@ -133,11 +170,19 @@ export async function GET(req: NextRequest) {
       const loserTeam = findMatchingTeam(loserEspn.displayName, loserEspn.espnId, teams!)
 
       if (!winnerTeam || !loserTeam) {
-        console.log(
-          `Could not match teams: ${winnerEspn.displayName} vs ${loserEspn.displayName}`
+        skippedNoMatch++
+        console.warn(
+          `[PROD] Could not match teams for game ${game.gameId}: ` +
+          `winner="${winnerEspn.displayName}" (espnId=${winnerEspn.espnId}) → ${winnerTeam ? 'matched' : 'NO MATCH'}, ` +
+          `loser="${loserEspn.displayName}" (espnId=${loserEspn.espnId}) → ${loserTeam ? 'matched' : 'NO MATCH'}`
         )
         continue
       }
+
+      console.log(
+        `[PROD] New final: ${winnerTeam.display_name} (${winnerTeam.seed}) ${winnerEspn.score} - ` +
+        `${loserTeam.display_name} (${loserTeam.seed}) ${loserEspn.score} | Round ${round} | ESPN ID: ${game.gameId}`
+      )
 
       // Upsert the game record
       const { error: upsertErr } = await db.from('games').upsert(
@@ -155,9 +200,10 @@ export async function GET(req: NextRequest) {
         { onConflict: 'espn_game_id' }
       )
       if (upsertErr) {
-        console.error('Error upserting game:', upsertErr)
+        console.error(`[PROD] Game upsert FAILED for ${game.gameId}:`, upsertErr)
         continue
       }
+      console.log(`[PROD] Game ${game.gameId} upserted successfully`)
 
       // Update winner: increment wins, store ESPN ID
       await db
@@ -167,6 +213,7 @@ export async function GET(req: NextRequest) {
           espn_id: winnerEspn.espnId,
         })
         .eq('id', winnerTeam.id)
+      console.log(`[PROD] ${winnerTeam.display_name}: wins ${winnerTeam.wins} → ${winnerTeam.wins + 1}`)
 
       // Update loser: mark eliminated, store ESPN ID
       await db
@@ -176,6 +223,7 @@ export async function GET(req: NextRequest) {
           espn_id: loserEspn.espnId,
         })
         .eq('id', loserTeam.id)
+      console.log(`[PROD] ${loserTeam.display_name}: eliminated`)
 
       // Update local state for subsequent iterations
       winnerTeam.wins += 1
@@ -187,15 +235,15 @@ export async function GET(req: NextRequest) {
       updatedTeams += 2
 
       // Find which players are affected
-      const { data: winnerPicks } = await db
-        .from('picks')
-        .select('player_name')
-        .eq('team_id', winnerTeam.id)
+      const [{ data: winnerPicks }, { data: loserPicks }] = await Promise.all([
+        db.from('picks').select('player_name').eq('team_id', winnerTeam.id),
+        db.from('picks').select('player_name').eq('team_id', loserTeam.id),
+      ])
 
-      const { data: loserPicks } = await db
-        .from('picks')
-        .select('player_name')
-        .eq('team_id', loserTeam.id)
+      const winnerPlayers = winnerPicks?.map((p) => p.player_name) ?? []
+      const loserPlayers = loserPicks?.map((p) => p.player_name) ?? []
+      console.log(`[PROD] Winner picked by: ${winnerPlayers.join(', ') || 'nobody'}`)
+      console.log(`[PROD] Loser picked by: ${loserPlayers.join(', ') || 'nobody'}`)
 
       const roundName = ROUND_NAMES[round] ?? `Round ${round}`
 
@@ -208,42 +256,67 @@ export async function GET(req: NextRequest) {
           loserScore: loserEspn.score,
           winnerSeed: winnerTeam.seed,
           loserSeed: loserTeam.seed,
-          winnerPlayers: winnerPicks?.map((p) => p.player_name) ?? [],
-          loserPlayers: loserPicks?.map((p) => p.player_name) ?? [],
+          winnerPlayers,
+          loserPlayers,
           round: roundName,
         },
         usedMessageIds
       )
+      console.log(`[PROD] Generated message ID: ${messageId}`)
 
       slackMessages.push({ text, espnGameId: game.gameId, messageId })
     }
 
+    console.log(
+      `[PROD] Processing summary — new: ${newResults}, already processed: ${skippedAlreadyProcessed}, ` +
+      `not completed: ${skippedNotCompleted}, first four: ${skippedFirstFour}, no match: ${skippedNoMatch}`
+    )
+
     // Send Slack notifications — each game result combined with standings
     if (slackMessages.length > 0) {
+      console.log(`[PROD] Sending ${slackMessages.length} Slack notification(s)...`)
+
       // Get standings once for all messages
-      const { data: standingsArr } = await db.rpc('get_standings')
+      console.log('[PROD] Fetching standings via RPC...')
+      const { data: standingsArr, error: standingsErr } = await db.rpc('get_standings')
+      if (standingsErr) {
+        console.error('[PROD] get_standings RPC failed:', standingsErr)
+      }
+      console.log(`[PROD] Standings:`, JSON.stringify(standingsArr))
+
       const standingsText = standingsArr?.length > 0
         ? '\n\n' + generateStandingsMessage(standingsArr)
         : ''
 
       for (const msg of slackMessages) {
         // Combine game result + standings into a single message
-        await sendSlackMessage(msg.text + standingsText)
+        console.log(`[PROD] Sending Slack message for game ${msg.espnGameId}...`)
+        const slackResult = await sendSlackMessage(msg.text + standingsText)
+        console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
+
         await db
           .from('games')
           .update({ slack_notified: true, message_id: msg.messageId })
           .eq('espn_game_id', msg.espnGameId)
+        console.log(`[PROD] Marked ${msg.espnGameId} as slack_notified with message_id=${msg.messageId}`)
       }
+    } else {
+      console.log('[PROD] No new games to notify about')
     }
+
+    const elapsed = Date.now() - startTime
+    console.log(`[PROD] === Done in ${elapsed}ms. New results: ${newResults}, Games checked: ${uniqueGames.size} ===`)
 
     return NextResponse.json({
       success: true,
       newResults,
       updatedTeams,
       gamesChecked: uniqueGames.size,
+      elapsed: `${elapsed}ms`,
     })
   } catch (error) {
-    console.error('Update scores error:', error)
+    const elapsed = Date.now() - startTime
+    console.error(`[PROD] === FAILED after ${elapsed}ms ===`, error)
     return NextResponse.json(
       { error: 'Internal server error', details: String(error) },
       { status: 500 }
