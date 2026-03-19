@@ -165,13 +165,8 @@ export async function GET(req: NextRequest) {
     // Brief pause so Slack doesn't rate-limit the second message
     await new Promise((r) => setTimeout(r, 1500))
 
-    // Debug: show all games in DB so we can verify standings source data
-    const { data: allGamesDebug } = await db
-      .from('games')
-      .select('espn_game_id, winner_team_id, loser_team_id, status, slack_notified')
-
     // Query standings from games table (source of truth)
-    const standingsArr = await queryStandings(db)
+    const { standings: standingsArr, debug: standingsDebug } = await queryStandings(db, true)
     let standingsText = ''
     if (standingsArr.length > 0) {
       standingsText = generateStandingsMessage(standingsArr)
@@ -183,13 +178,15 @@ export async function GET(req: NextRequest) {
       testGame: testCount + 1,
       totalTests: FAKE_MATCHUPS.length,
       matchup: `${winnerTeam.display_name} (${winnerTeam.seed}) ${matchup.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${matchup.loserScore}`,
+      winnerTeamId: winnerTeam.id,
+      loserTeamId: loserTeam.id,
       winnerPickedBy: winnerPicks?.map((p) => p.player_name) ?? [],
       loserPickedBy: loserPicks?.map((p) => p.player_name) ?? [],
       messageId,
       slackMessage: text,
       debug: {
-        allGamesInDb: allGamesDebug,
         standingsComputed: standingsArr,
+        standingsDebug,
       },
       nextHitWillSend: testCount + 1 < FAKE_MATCHUPS.length
         ? `Game ${testCount + 2}: Seed ${FAKE_MATCHUPS[testCount + 1].winnerSeed} vs Seed ${FAKE_MATCHUPS[testCount + 1].loserSeed}`

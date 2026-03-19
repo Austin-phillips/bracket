@@ -232,7 +232,7 @@ export async function GET(req: NextRequest) {
 
     // Send standings update after all game messages
     if (slackMessages.length > 0) {
-      const standingsArr = await queryStandings(db)
+      const { standings: standingsArr } = await queryStandings(db)
       if (standingsArr.length > 0) {
         await sendSlackMessage(generateStandingsMessage(standingsArr))
       }

@@ -1,12 +1,23 @@
 import { SupabaseClient } from '@supabase/supabase-js'
 
+export interface StandingsResult {
+  standings: { name: string; points: number; alive: number }[]
+  debug?: {
+    games: unknown[]
+    picksForWinners: { player_name: string; team_id: number }[]
+    teamWinIds: number[]
+    teamEliminatedIds: number[]
+  }
+}
+
 /**
  * Computes current standings by counting wins from the games table.
  * This is the source of truth — avoids stale reads from teams.wins.
  */
 export async function queryStandings(
-  db: SupabaseClient
-): Promise<{ name: string; points: number; alive: number }[]> {
+  db: SupabaseClient,
+  includeDebug = false
+): Promise<StandingsResult> {
   const [
     { data: allGames },
     { data: allPicks },
@@ -17,7 +28,7 @@ export async function queryStandings(
     db.from('teams').select('id'),
   ])
 
-  if (!allPicks) return []
+  if (!allPicks) return { standings: [] }
 
   // Count wins and eliminations from completed games
   const teamWins = new Map<number, number>()
@@ -38,9 +49,23 @@ export async function queryStandings(
     standings.set(p.player_name, current)
   }
 
-  return [...standings.entries()].map(([name, s]) => ({
+  const standingsArr = [...standings.entries()].map(([name, s]) => ({
     name,
     points: s.points,
     alive: s.alive,
   }))
+
+  const winnerTeamIds = [...teamWins.keys()]
+  const result: StandingsResult = { standings: standingsArr }
+
+  if (includeDebug) {
+    result.debug = {
+      games: allGames ?? [],
+      picksForWinners: allPicks.filter((p) => winnerTeamIds.includes(p.team_id)),
+      teamWinIds: winnerTeamIds,
+      teamEliminatedIds: [...teamEliminated],
+    }
+  }
+
+  return result
 }
