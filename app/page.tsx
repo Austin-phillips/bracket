@@ -209,13 +209,13 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Live / Upcoming Games */}
-      <LiveGames games={liveGames} />
-
       {/* Leaderboard */}
       <div className="mb-8">
         <Leaderboard standings={standings} />
       </div>
+
+      {/* Live / Upcoming Games */}
+      <LiveGames games={liveGames} />
 
       {/* Player Cards */}
       <div className="mb-8 space-y-4">
