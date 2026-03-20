@@ -121,7 +121,7 @@ export function normalizeTeamName(name: string): string {
     'fighting illini', 'quakers', 'vandals', 'bison', 'owls',
     'billikens', 'trojans', 'hoyas', 'jayhawks', 'sooners',
     'volunteers', 'cavaliers', 'crimson tide', 'boilermakers',
-    'hawkeyes', 'zips', 'pride', 'cougars', 'musketeers',
+    'hawkeyes', 'zips', 'pride', 'cougars', 'musketeers', 'raiders',
   ]
 
   for (const suffix of suffixes) {

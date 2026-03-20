@@ -17,7 +17,7 @@ export const TEAM_NAME_ALIASES: Record<string, string[]> = {
   'McNeese': ['McNeese State', 'McNeese Cowboys'],
   'Prairie View A&M': ['Prairie View', 'Prairie View A&M Panthers', 'Prairie View A&amp;M'],
   'Texas A&M': ['Texas A&M Aggies', 'Texas A&amp;M'],
-  'Wright St': ['Wright State'],
+  'Wright St': ['Wright State', 'Wright State Raiders'],
   'Tennessee St': ['Tennessee State'],
   'Long Island': ['Long Island University', 'LIU', 'LIU Sharks'],
   'Utah State': ['Utah State Aggies'],
