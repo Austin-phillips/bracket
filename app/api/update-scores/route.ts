@@ -165,7 +165,13 @@ export async function GET(req: NextRequest) {
         continue
       }
 
-      // Find the winner and loser
+      // Find the winner and loser — skip if ESPN hasn't set the winner flag yet
+      // (race condition: completed can be true before winner booleans are set)
+      if (!game.team1.winner && !game.team2.winner) {
+        console.warn(`[PROD] Game ${game.gameId} completed but no winner flag set — skipping until next run`)
+        skippedNotCompleted++
+        continue
+      }
       const winnerEspn = game.team1.winner ? game.team1 : game.team2
       const loserEspn = game.team1.winner ? game.team2 : game.team1
 
