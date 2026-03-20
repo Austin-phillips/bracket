@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { fetchTournamentGames, normalizeTeamName, ESPNGame } from '@/lib/espn'
-import { sendSlackMessage } from '@/lib/slack'
 import { sendGroupSMS } from '@/lib/sms'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage } from '@/lib/messages'
@@ -145,7 +144,7 @@ export async function GET(req: NextRequest) {
     let skippedNotCompleted = 0
     let skippedFirstFour = 0
     let skippedNoMatch = 0
-    const slackMessages: { text: string; espnGameId: string; messageId: string }[] = []
+    const pendingMessages: { text: string; espnGameId: string; messageId: string }[] = []
 
     for (const game of uniqueGames.values()) {
       // Skip games we've already fully processed
@@ -262,7 +261,7 @@ export async function GET(req: NextRequest) {
       )
       console.log(`[PROD] Generated message ID: ${messageId}`)
 
-      slackMessages.push({ text, espnGameId: game.gameId, messageId })
+      pendingMessages.push({ text, espnGameId: game.gameId, messageId })
     }
 
     console.log(
@@ -270,11 +269,11 @@ export async function GET(req: NextRequest) {
       `not completed: ${skippedNotCompleted}, first four: ${skippedFirstFour}, no match: ${skippedNoMatch}`
     )
 
-    // Send Slack notifications — each game result combined with standings
-    if (slackMessages.length > 0) {
-      console.log(`[PROD] Sending ${slackMessages.length} Slack notification(s)...`)
+    // Send SMS notifications — each game result
+    if (pendingMessages.length > 0) {
+      console.log(`[PROD] Sending ${pendingMessages.length} SMS notification(s)...`)
 
-      for (const msg of slackMessages) {
+      for (const msg of pendingMessages) {
         // Atomically claim this notification — only one concurrent run can win
         const { data: claimed } = await db
           .from('games')
@@ -284,16 +283,12 @@ export async function GET(req: NextRequest) {
           .select('espn_game_id')
 
         if (!claimed || claimed.length === 0) {
-          console.log(`[PROD] Game ${msg.espnGameId} already notified — skipping duplicate Slack`)
+          console.log(`[PROD] Game ${msg.espnGameId} already notified — skipping duplicate`)
           continue
         }
 
-        console.log(`[PROD] Sending notifications for game ${msg.espnGameId}...`)
-        const [slackResult, smsResult] = await Promise.all([
-          sendSlackMessage(msg.text),
-          sendGroupSMS(msg.text),
-        ])
-        console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
+        console.log(`[PROD] Sending SMS for game ${msg.espnGameId}...`)
+        const smsResult = await sendGroupSMS(msg.text)
         console.log(`[PROD] SMS result: ok=${smsResult.ok} sent=${smsResult.sent}${smsResult.errors.length ? ' errors=' + smsResult.errors.join('; ') : ''}`)
       }
     } else {

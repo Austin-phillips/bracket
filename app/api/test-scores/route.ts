@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { normalizeTeamName } from '@/lib/espn'
-import { sendSlackMessage } from '@/lib/slack'
+import { sendGroupSMS } from '@/lib/sms'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage, generateStandingsMessage } from '@/lib/messages'
 import { Team } from '@/lib/types'
@@ -57,7 +57,7 @@ function detectRound(gameDate: string): number {
 }
 
 // ── Main handler ────────────────────────────────────────────────────────────
-// ?game=N → replays games 1-N in memory, writes + Slacks ONLY game N
+// ?game=N → replays games 1-N in memory, writes + sends SMS ONLY for game N
 export async function GET(req: NextRequest) {
   const startTime = Date.now()
   console.log('[TEST] === Test scores endpoint hit ===')
@@ -105,9 +105,9 @@ export async function GET(req: NextRequest) {
     }
 
     const newGameIndex = gameNumber - 1
-    let slackText = ''
-    let slackMessageId = ''
-    let slackGameId = ''
+    let messageText = ''
+    let msgMessageId = ''
+    let msgGameId = ''
     let matchupSummary = ''
 
     for (let i = 0; i < gameNumber; i++) {
@@ -125,7 +125,7 @@ export async function GET(req: NextRequest) {
       winnerTeam.wins += 1
       loserTeam.is_eliminated = true
 
-      // Only DB-write and Slack for game N (the new one)
+      // Only DB-write and SMS for game N (the new one)
       if (i === newGameIndex) {
         const fakeGameId = `test-${gameNumber}`
         console.log(`[TEST] Processing game ${gameNumber}: ${winnerTeam.display_name} (${winnerTeam.seed}) ${mock.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${mock.loserScore} | Round ${round}`)
@@ -148,7 +148,7 @@ export async function GET(req: NextRequest) {
         await db.from('teams').update({ is_eliminated: true }).eq('id', loserTeam.id)
         console.log(`[TEST] ${winnerTeam.display_name}: wins=${winnerTeam.wins} | ${loserTeam.display_name}: eliminated`)
 
-        // Build Slack message
+        // Build notification message
         const winnerPlayers = allPicks!.filter((p) => p.team_id === winnerTeam.id).map((p) => p.player_name)
         const loserPlayers = allPicks!.filter((p) => p.team_id === loserTeam.id).map((p) => p.player_name)
         console.log(`[TEST] Winner picked by: ${winnerPlayers.join(', ') || 'nobody'} | Loser picked by: ${loserPlayers.join(', ') || 'nobody'}`)
@@ -161,9 +161,9 @@ export async function GET(req: NextRequest) {
           winnerPlayers, loserPlayers, round: roundName,
         }, usedMessageIds)
 
-        slackText = text
-        slackMessageId = messageId
-        slackGameId = fakeGameId
+        messageText = text
+        msgMessageId = messageId
+        msgGameId = fakeGameId
         matchupSummary = `${winnerTeam.display_name} (${winnerTeam.seed}) ${mock.winnerScore} - ${loserTeam.display_name} (${loserTeam.seed}) ${mock.loserScore}`
       } else {
         console.log(`[TEST] Replaying game ${i + 1} in memory: ${winnerTeam.display_name} beat ${loserTeam.display_name}`)
@@ -187,19 +187,19 @@ export async function GET(req: NextRequest) {
     standingsArr.sort((a, b) => b.points - a.points || b.alive - a.alive)
     console.log(`[TEST] Standings:`, JSON.stringify(standingsArr))
 
-    // ── Send ONE Slack message ──────────────────────────────────────────
-    if (slackText) {
+    // ── Send ONE SMS notification ──────────────────────────────────────
+    if (messageText) {
       const standingsText = standingsArr.length > 0
         ? '\n\n' + generateStandingsMessage(standingsArr)
         : ''
 
-      console.log(`[TEST] Sending Slack for game ${gameNumber}...`)
-      const slackResult = await sendSlackMessage(slackText + standingsText)
-      console.log(`[TEST] Slack: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
+      console.log(`[TEST] Sending SMS for game ${gameNumber}...`)
+      const smsResult = await sendGroupSMS(messageText + standingsText)
+      console.log(`[TEST] SMS: ok=${smsResult.ok} sent=${smsResult.sent}${smsResult.errors.length ? ' errors=' + smsResult.errors.join('; ') : ''}`)
 
       await db.from('games')
-        .update({ slack_notified: true, message_id: slackMessageId })
-        .eq('espn_game_id', slackGameId)
+        .update({ slack_notified: true, message_id: msgMessageId })
+        .eq('espn_game_id', msgGameId)
     }
 
     const elapsed = Date.now() - startTime

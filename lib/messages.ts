@@ -1,4 +1,4 @@
-// Funny Slack message templates for game results
+// Funny message templates for game results
 // {winner} = winning team, {loser} = losing team
 // {wp} = winning player(s), {lp} = losing player(s)
 // {ws} = winner score, {ls} = loser score
@@ -310,7 +310,7 @@ export function generateGameMessage(
     .replace(/{seed_l}/g, ctx.loserSeed.toString())
     .replace(/{round}/g, ctx.round)
 
-  return { text: text + '\n\n<https://bracket-steel.vercel.app/|🖥️ View Standings>', messageId: template.id }
+  return { text: text + '\n\nhttps://bracket-steel.vercel.app', messageId: template.id }
 }
 
 export function generateStandingsMessage(
