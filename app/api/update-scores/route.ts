@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseAdmin } from '@/lib/supabase'
 import { fetchTournamentGames, normalizeTeamName, ESPNGame } from '@/lib/espn'
 import { sendSlackMessage } from '@/lib/slack'
+import { sendGroupSMS } from '@/lib/sms'
 import { TEAM_NAME_ALIASES, ROUND_NAMES } from '@/lib/constants'
 import { generateGameMessage } from '@/lib/messages'
 import { Team } from '@/lib/types'
@@ -287,9 +288,13 @@ export async function GET(req: NextRequest) {
           continue
         }
 
-        console.log(`[PROD] Sending Slack message for game ${msg.espnGameId}...`)
-        const slackResult = await sendSlackMessage(msg.text)
+        console.log(`[PROD] Sending notifications for game ${msg.espnGameId}...`)
+        const [slackResult, smsResult] = await Promise.all([
+          sendSlackMessage(msg.text),
+          sendGroupSMS(msg.text),
+        ])
         console.log(`[PROD] Slack result: ok=${slackResult.ok} status=${slackResult.status}${slackResult.error ? ' error=' + slackResult.error : ''}`)
+        console.log(`[PROD] SMS result: ok=${smsResult.ok} sent=${smsResult.sent}${smsResult.errors.length ? ' errors=' + smsResult.errors.join('; ') : ''}`)
       }
     } else {
       console.log('[PROD] No new games to notify about')
