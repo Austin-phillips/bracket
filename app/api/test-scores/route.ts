@@ -135,7 +135,7 @@ export async function GET(req: NextRequest) {
           espn_game_id: fakeGameId, round,
           winner_team_id: winnerTeam.id, loser_team_id: loserTeam.id,
           winner_score: parseInt(mock.winnerScore), loser_score: parseInt(mock.loserScore),
-          status: 'final', game_date: mock.date, slack_notified: false,
+          status: 'final', game_date: mock.date,
         }, { onConflict: 'espn_game_id' })
         if (upsertErr) {
           console.error(`[TEST] Upsert FAILED:`, upsertErr)

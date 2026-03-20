@@ -198,9 +198,8 @@ export async function GET(req: NextRequest) {
           loser_score: parseInt(loserEspn.score) || 0,
           status: 'final',
           game_date: game.date,
-          slack_notified: false,
         },
-        { onConflict: 'espn_game_id' }
+        { onConflict: 'espn_game_id', ignoreDuplicates: false }
       )
       if (upsertErr) {
         console.error(`[PROD] Game upsert FAILED for ${game.gameId}:`, upsertErr)
