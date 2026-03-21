@@ -84,7 +84,7 @@ export default function Home() {
       const supabase = getSupabase()
 
       // Fetch DB data and live games in parallel
-      const [picksRes, gamesRes, liveRes] = await Promise.all([
+      const [picksRes, gamesRes, allGamesRes, liveRes] = await Promise.all([
         supabase
           .from('picks')
           .select('player_name, seed, team_id, teams(id, name, display_name, seed, region, is_eliminated, wins)')
@@ -95,11 +95,22 @@ export default function Home() {
           .eq('status', 'final')
           .order('game_date', { ascending: false })
           .limit(20),
+        supabase
+          .from('games')
+          .select('winner_team_id')
+          .eq('status', 'final'),
         fetch('/api/live-games').then((r) => r.json()),
       ])
 
       const picks = picksRes.data
       const recentGames = gamesRes.data
+      const allFinalGames = allGamesRes.data
+
+      // Count wins from games table (source of truth)
+      const teamWins = new Map<number, number>()
+      for (const g of (allFinalGames ?? [])) {
+        teamWins.set(g.winner_team_id, (teamWins.get(g.winner_team_id) ?? 0) + 1)
+      }
 
       if (picks) {
         const standingsMap = new Map<string, { points: number; alive: number; total: number }>()
@@ -109,8 +120,9 @@ export default function Home() {
           const team = pick.teams
           if (!team) continue
 
+          const wins = teamWins.get(team.id) ?? 0
           const current = standingsMap.get(pick.player_name) ?? { points: 0, alive: 0, total: 0 }
-          current.points += team.wins
+          current.points += wins
           current.total++
           if (!team.is_eliminated) current.alive++
           standingsMap.set(pick.player_name, current)
@@ -120,7 +132,7 @@ export default function Home() {
             seed: team.seed,
             team_name: team.display_name,
             region: team.region,
-            wins: team.wins,
+            wins,
             is_eliminated: team.is_eliminated,
           })
         }
