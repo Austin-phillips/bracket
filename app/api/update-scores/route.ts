@@ -61,10 +61,10 @@ function detectRound(gameDate: string): number {
   const month = d.getMonth() + 1
   const day = d.getDate()
 
-  // 2026 tournament dates (approximate)
+  // 2026 tournament dates
   if (month === 3 && day <= 18) return 0  // First Four: Mar 17-18
-  if (month === 3 && day <= 22) return 1  // Round of 64: Mar 20-21
-  if (month === 3 && day <= 24) return 2  // Round of 32: Mar 22-23
+  if (month === 3 && day <= 20) return 1  // Round of 64: Mar 19-20
+  if (month === 3 && day <= 22) return 2  // Round of 32: Mar 21-22
   if (month === 3 && day <= 28) return 3  // Sweet 16: Mar 27-28
   if (month === 3 && day <= 30) return 4  // Elite 8: Mar 29-30
   if (month === 4 && day <= 5) return 5   // Final Four: Apr 4
@@ -214,24 +214,32 @@ export async function GET(req: NextRequest) {
       console.log(`[PROD] Game ${game.gameId} upserted successfully`)
 
       // Update winner: increment wins, store ESPN ID
-      await db
+      const { error: winErr } = await db
         .from('teams')
         .update({
           wins: winnerTeam.wins + 1,
           espn_id: winnerEspn.espnId,
         })
         .eq('id', winnerTeam.id)
-      console.log(`[PROD] ${winnerTeam.display_name}: wins ${winnerTeam.wins} → ${winnerTeam.wins + 1}`)
+      if (winErr) {
+        console.error(`[PROD] Failed to update wins for ${winnerTeam.display_name}:`, winErr)
+      } else {
+        console.log(`[PROD] ${winnerTeam.display_name}: wins ${winnerTeam.wins} → ${winnerTeam.wins + 1}`)
+      }
 
       // Update loser: mark eliminated, store ESPN ID
-      await db
+      const { error: loseErr } = await db
         .from('teams')
         .update({
           is_eliminated: true,
           espn_id: loserEspn.espnId,
         })
         .eq('id', loserTeam.id)
-      console.log(`[PROD] ${loserTeam.display_name}: eliminated`)
+      if (loseErr) {
+        console.error(`[PROD] Failed to update elimination for ${loserTeam.display_name}:`, loseErr)
+      } else {
+        console.log(`[PROD] ${loserTeam.display_name}: eliminated`)
+      }
 
       // Update local state for subsequent iterations
       winnerTeam.wins += 1
